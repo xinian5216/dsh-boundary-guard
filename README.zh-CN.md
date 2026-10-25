@@ -30,22 +30,28 @@
 要求：DeepSeek Harness `0.2.1-rc.3` 或任何 `0.2.x` 运行时
 （`engines.dsh: ">=0.2.1-rc.3 <0.3.0"`），Node.js 24。
 
-在 Web 客户端中：**Plugins → Install**，从插件市场安装 `dsh-boundary-guard`，
-或安装打包好的 `.tgz`。
-
-命令行：
+从 [v0.1.0 Release](https://github.com/xinian5216/dsh-boundary-guard/releases/tag/v0.1.0)
+下载打包好的 bundle（`dsh-boundary-guard-0.1.0.tgz`，SHA-256 见随附的
+`SHA256SUMS`），然后通过官方插件管理器安装：
 
 ```sh
-# 安装到某个 profile（添加并启用该 bundle）
-dsh plugin --profile <profile> add dsh-boundary-guard
+# 从 release 压缩包安装
+dsh plugin --profile <profile> add ./dsh-boundary-guard-0.1.0.tgz
 
 # 或从本地构建安装
+git clone https://github.com/xinian5216/dsh-boundary-guard.git
+cd dsh-boundary-guard
 pnpm install && pnpm run build && pnpm pack
 dsh plugin --profile <profile> add ./dsh-boundary-guard-0.1.0.tgz
 ```
 
-profile 必须已包含 DSH 基础组合（所有官方 profile 均如此）；插件依赖它提供
-`@deepseek-ai/cordis` 与工具流水线。
+在 Web 客户端中也可以通过 **Plugins → Install** 选择该 `.tgz` 安装。profile 必须
+已包含 DSH 基础组合（所有官方 profile 均如此）；插件依赖它提供
+`@deepseek-ai/cordis` 与工具流水线。上架插件市场是后续工作，release 压缩包是
+当前经过验证的分发渠道。
+
+可用 [`examples/verify-install.ps1`](examples/verify-install.ps1) 在隔离的 DSH
+主目录中完整复现安装 / 组合 / 加载 / 移除验证。
 
 ## 卸载
 
@@ -56,11 +62,10 @@ dsh plugin --profile <profile> remove dsh-boundary-guard
 移除会取消选择该 bundle 并卸载其监听器。`$DSH_HOME/boundary-guard` 下的审计
 日志与快照会保留，如需删除请手动处理。
 
-只想禁用（不删除）：
-
-```sh
-dsh plugin --profile <profile> disable dsh-boundary-guard   # 若 CLI 支持切换
-```
+只想禁用（不删除）：在 Web 客户端的 **Plugins** 页面切换该 bundle 的启用状态
+（它会修改 profile 的 bundle 选择），或从
+`$DSH_HOME/profiles/<profile>/package.json` 的 `dsh.profile.bundles` 列表中移除
+对应条目。
 
 ## 命令
 

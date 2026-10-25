@@ -8,6 +8,7 @@ lib/
 .dsh-verify/
 .dsh-test-home/
 verify-home/
+.dsh-rel-verify/
 
 # Audit and snapshot data created by local runs
 boundary-guard-audit/
@@ -27,3 +28,5 @@ Thumbs.db
 
 # Packed artifacts (built on demand for releases)
 *.tgz
+SHA256SUMS
+release-notes.md

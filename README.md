@@ -34,23 +34,31 @@ mode verbatim; an unknown parent fails closed to `inspect`.
 Requirements: DeepSeek Harness `0.2.1-rc.3` or any `0.2.x` runtime
 (`engines.dsh: ">=0.2.1-rc.3 <0.3.0"`), Node.js 24.
 
-From the Web client: **Plugins → Install**, then install the bundle
-`dsh-boundary-guard` from the registry (or a packed `.tgz`).
-
-From the CLI:
+Download the packed bundle from the
+[v0.1.0 release](https://github.com/xinian5216/dsh-boundary-guard/releases/tag/v0.1.0)
+(`dsh-boundary-guard-0.1.0.tgz`; SHA-256 in the attached `SHA256SUMS`) and install
+it with the official plugin manager:
 
 ```sh
-# Install into a profile (adds the bundle and enables it)
-dsh plugin --profile <profile> add dsh-boundary-guard
+# From the release tarball
+dsh plugin --profile <profile> add ./dsh-boundary-guard-0.1.0.tgz
 
 # Or from a local build
+git clone https://github.com/xinian5216/dsh-boundary-guard.git
+cd dsh-boundary-guard
 pnpm install && pnpm run build && pnpm pack
 dsh plugin --profile <profile> add ./dsh-boundary-guard-0.1.0.tgz
 ```
 
-The profile must already contain the DSH base composition (every shipped
+In the Web client you can also use **Plugins → Install** and point it at the
+tarball. The profile must already contain the DSH base composition (every shipped
 profile does); the plugin depends on it for `@deepseek-ai/cordis` and the tool
-pipeline.
+pipeline. A registry listing is future work; the release tarball is the verified
+distribution channel.
+
+Verify an installation end to end with
+[`examples/verify-install.ps1`](examples/verify-install.ps1), which reproduces the
+install / compose / load / remove checks in an isolated DSH home.
 
 ## Uninstall
 
@@ -62,11 +70,9 @@ Removal deselects the bundle and unloads its listeners. The audit log and
 snapshots under `$DSH_HOME/boundary-guard` are left in place; delete them
 yourself if you want them gone.
 
-Disable without removing (per profile):
-
-```sh
-dsh plugin --profile <profile> disable dsh-boundary-guard   # if your CLI supports toggles
-```
+To disable without removing, use the Web client's **Plugins** page toggle for the
+bundle (it edits the profile's bundle selection), or remove the entry from
+`dsh.profile.bundles` in `$DSH_HOME/profiles/<profile>/package.json`.
 
 ## Commands
 
