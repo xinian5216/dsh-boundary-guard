@@ -105,6 +105,22 @@ export function apply(ctx: Context, rawConfig: ResolvedConfig) {
     return canonicalRoots.get(raw) ?? raw
   }
 
+  // Executions whose policy the async gate already applied. The monotonic
+  // guard runs only after the waterfall allowed a call, so a recorded token
+  // means the full policy (paths, mode, approval) was evaluated for exactly
+  // this call and the guard must not second-guess it; an unrecorded token
+  // means another listener answered before the gate ran — the bypass case the
+  // guard exists for, where it falls back to a lexical evaluation.
+  const gateApplied = new Set<symbol>()
+  const GATE_MEMORY_CAP = 4096
+  const markGateApplied = (token: symbol): void => {
+    if (gateApplied.size >= GATE_MEMORY_CAP) {
+      const oldest = gateApplied.values().next().value
+      if (oldest !== undefined) gateApplied.delete(oldest)
+    }
+    gateApplied.add(token)
+  }
+
   // ---- Optional service wiring -------------------------------------------
   ctx.inject(['sessionProjections'], (scope) => {
     modes.attach(scope.sessionProjections)
@@ -134,6 +150,10 @@ export function apply(ctx: Context, rawConfig: ResolvedConfig) {
 
     // The approvable gate.
     scope.on('tools/pre-execute', async (exec, next) => {
+      // Record that the full policy ran for this exact execution, so the
+      // monotonic guard can defer to it instead of re-deciding on lexical
+      // facts (which cannot resolve short-name aliases).
+      markGateApplied(exec.token as symbol)
       const session = exec.agent?.session
       // Agentless calls have no session to authorize: fail closed to inspect.
       const mode: GuardMode = session === undefined ? 'inspect' : modes.effective(session).mode
@@ -164,6 +184,8 @@ export function apply(ctx: Context, rawConfig: ResolvedConfig) {
         return next()
       }
       if (result.decision === 'deny') {
+        // The guard never runs on a denial; drop the marker so it cannot leak.
+        gateApplied.delete(exec.token as symbol)
         record(session, mode, operation, result, undefined, exec.callId)
         return {
           kind: 'deny',
@@ -293,6 +315,10 @@ export function apply(ctx: Context, rawConfig: ResolvedConfig) {
 
   /** The synchronous backstop's denial reason, or undefined to leave the call. */
   function guardReason(execution: ToolExecution, scope: Context): string | undefined {
+    // The async gate already applied the full policy (including approvals) to
+    // this exact execution; a monotonic guard must not re-decide it on lexical
+    // facts that cannot resolve short-name aliases.
+    if (gateApplied.delete(execution.token as symbol)) return undefined
     const session = execution.agent?.session
     const mode: GuardMode = session === undefined ? 'inspect' : modes.effective(session).mode
     // The guard works on lexical facts (no filesystem access), so the workspace
