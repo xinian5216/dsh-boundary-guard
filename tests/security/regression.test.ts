@@ -295,6 +295,41 @@ test('SEC-15: plugin disable and unload restore the unprotected pipeline', async
   assert.equal(status.kind, 'error')
 })
 
+// 16. Windows 8.3 short-name aliases do not break the boundary.
+test('SEC-16: short-name aliases are compared canonically', async (t) => {
+  if (process.platform !== 'win32') {
+    t.skip('8.3 short names exist only on Windows')
+    return
+  }
+  const longRoot = join(tmpdir(), `boundary-guard-alias-${Date.now()}-with-a-very-long-name`)
+  mkdirSync(longRoot, { recursive: true })
+  // The 8.3 short spelling of the same directory, obtained through the
+  // Scripting.FileSystemObject (the reliable non-interactive route).
+  const shortRoot = execFileSync(
+    'powershell.exe',
+    ['-NoProfile', '-Command', `(New-Object -ComObject Scripting.FileSystemObject).GetFolder('${longRoot}').ShortPath`],
+    { encoding: 'utf8' },
+  ).trim()
+  try {
+    assert.notEqual(shortRoot, longRoot, 'the fixture requires a distinct short name')
+    const guard = await env({ config: { defaultMode: 'develop' }, workspaceRoot: longRoot, sessionCwd: shortRoot })
+    // Writes through both spellings of the workspace are inside the workspace.
+    const viaLong = await guard.call('write', { file_path: join(longRoot, 'a.ts'), content: 'x' })
+    assert.equal(viaLong.isError, false, viaLong.text)
+    const viaShort = await guard.call('write', { file_path: join(shortRoot, 'b.ts'), content: 'y' })
+    assert.equal(viaShort.isError, false, viaShort.text)
+    assert.equal(existsSync(join(longRoot, 'a.ts')), true)
+    assert.equal(existsSync(join(longRoot, 'b.ts')), true)
+    // A path outside both spellings is still denied.
+    const outside = join(tmpdir(), `boundary-guard-alias-out-${Date.now()}.txt`)
+    const escaped = await guard.call('write', { file_path: outside, content: 'z' })
+    assert.equal(escaped.isError, true)
+    assert.equal(existsSync(outside), false)
+  } finally {
+    rmSync(longRoot, { recursive: true, force: true })
+  }
+})
+
 function readdirSafe(dir: string): string[] {
   try {
     return readdirSync(dir).filter((name) => name.endsWith('.jsonl')).map((name) => join(dir, name))

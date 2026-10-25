@@ -155,9 +155,17 @@ export async function resolvePathFact(
   }
 }
 
-/** Whether either the lexical or the real spelling escapes `root`. */
+/**
+ * Whether a path escapes `root`.
+ *
+ * The comparison uses the canonical (realpath-resolved) spelling, which is the
+ * only spelling that survives Windows 8.3 short-name aliases, junctions, and
+ * symlinks: `C:\\Users\\RUNNER~1\\...` and `C:\\Users\\runneradmin\\...` name
+ * the same directory. When the path could not be resolved at all, the lexical
+ * spelling is used.
+ */
 export function escapesRoot(root: string, fact: PathFact, platform: Platform = currentPlatform): boolean {
-  return !isInside(root, fact.absolute, platform) || !isInside(root, fact.real, platform)
+  return !isInside(root, fact.real, platform)
 }
 
 /**
@@ -176,5 +184,19 @@ export function lexicalPathFact(input: string, base: string | undefined, platfor
     ...(stream === undefined ? {} : { stream }),
     exists: false,
     isDirectory: false,
+  }
+}
+
+/**
+ * Canonicalize a root for boundary comparison: resolve symlinks and short-name
+ * aliases when the path exists, otherwise return the normalized spelling.
+ */
+export async function canonicalizeRoot(root: string, platform: Platform = currentPlatform): Promise<string> {
+  const normalized = normalizePath(root, undefined, platform)
+  try {
+    const resolved = await realpath(normalized)
+    return foldDevicePrefix(resolved, platform).replace(/[\\/]+$/, '') || resolved
+  } catch {
+    return normalized
   }
 }

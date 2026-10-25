@@ -27,8 +27,9 @@ First release of DSH Boundary Guard.
   home, and the plugin's own installation. Protected paths are permanently
   non-writable in every mode.
 - Path boundary checks with Windows case-insensitivity, UNC and `\\?\` folding,
-  alternate data stream splitting, symlink/junction resolution through the
-  deepest existing ancestor, and segment-wise containment.
+  alternate data stream splitting, 8.3 short-name alias canonicalization,
+  symlink/junction resolution through the deepest existing ancestor, and
+  segment-wise containment.
 - Shell command analysis for PowerShell, CMD, and Bash: git subcommands,
   package managers, remote operations, destructive commands, privilege
   escalation, system configuration, dynamic execution, redirections, and bulk
@@ -52,11 +53,12 @@ First release of DSH Boundary Guard.
 
 ### Verified
 
-- 103 automated tests: unit, integration against the real DSH tool pipeline
+- 104 automated tests: unit, integration against the real DSH tool pipeline
   (ToolRuntime, fs tools, the Windows ACL sandbox, the approval service, and
-  the command registry), and 15 security regression tests.
+  the command registry), and 16 security regression tests (the 15 acceptance
+  criteria plus a Windows 8.3 short-name alias regression).
 - Real installation, composition, load, and removal through the official DSH
-  plugin manager in an isolated profile.
+  plugin manager in an isolated profile, including from the packed bundle.
 
 ### Known limitations
 

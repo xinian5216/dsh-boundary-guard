@@ -68,8 +68,10 @@ to trust the guard, and for contributors changing it.
 ### E. Path tricks
 
 * Windows case-insensitivity, drive-letter normalization, UNC and `\\?\`
-  folding, alternate data streams, segment-wise containment, and symlink /
-  junction resolution through the deepest existing ancestor are all handled.
+  folding, alternate data streams, segment-wise containment, Windows 8.3
+  short-name aliases (workspace roots and targets are compared in canonical
+  form), and symlink / junction resolution through the deepest existing
+  ancestor are all handled.
 * Known limit: **time-of-check to time-of-use races**. The policy check and the
   tool execution are separate steps; a symlink swapped in between can in
   principle evade the policy layer. The OS sandbox is the backstop for

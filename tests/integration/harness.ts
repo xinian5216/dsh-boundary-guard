@@ -69,6 +69,11 @@ export interface GuardTestEnvOptions {
   workspaceRoot?: string
   /** Session lineage metadata (for subagent inheritance tests). */
   sessionMeta?: { origin?: 'subagent'; parentSession?: string }
+  /**
+   * Working directory recorded on the session when it differs from the
+   * workspace root (used to exercise Windows 8.3 short-name aliases).
+   */
+  sessionCwd?: string
 }
 
 /** Compose the real pipeline with the real plugin. */
@@ -107,7 +112,7 @@ export async function createGuardEnv(options: GuardTestEnvOptions = {}): Promise
     id: sessionId,
     createdAt: Date.now(),
     isSeeded: false,
-    cwd: workspace.root,
+    cwd: options.sessionCwd ?? workspace.root,
     ...(options.sessionMeta?.origin === undefined ? {} : { origin: options.sessionMeta.origin }),
     ...(options.sessionMeta?.parentSession === undefined ? {} : { parentSession: options.sessionMeta.parentSession as SessionId }),
   })

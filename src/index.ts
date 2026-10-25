@@ -22,7 +22,7 @@ import type { Session } from '@deepseek-ai/dsh-session'
 import type { ApprovalOutcome } from '@deepseek-ai/dsh-user-approval'
 import { classifyCore, classifyToolCall, type ClassifierContext } from './tools/classify.ts'
 import { evaluatePolicy } from './policy/engine.ts'
-import { currentPlatform, lexicalPathFact, resolvePathFact } from './boundary/paths.ts'
+import { canonicalizeRoot, currentPlatform, lexicalPathFact, resolvePathFact } from './boundary/paths.ts'
 import { currentPluginRoot, discoverProtectedRoots, discoveryFromEnvironment, type ProtectedRoot } from './boundary/protected.ts'
 import { Config, normalizeConfig, type ResolvedConfig } from './config.ts'
 import { GuardModeManager } from './mode/manager.ts'
@@ -88,6 +88,23 @@ export function apply(ctx: Context, rawConfig: ResolvedConfig) {
     pluginVersion: PLUGIN_VERSION,
   }
 
+  // Roots are canonicalized once (realpath) so comparisons survive Windows
+  // short-name aliases, junctions, and symlinks. The synchronous guard reads
+  // the same cache, which the async gate has already populated for the session.
+  const canonicalRoots = new Map<string, string>()
+  const canonicalRoot = async (raw: string | undefined): Promise<string | undefined> => {
+    if (raw === undefined) return undefined
+    const cached = canonicalRoots.get(raw)
+    if (cached !== undefined) return cached
+    const canonical = await canonicalizeRoot(raw, platform)
+    canonicalRoots.set(raw, canonical)
+    return canonical
+  }
+  const canonicalRootSync = (raw: string | undefined): string | undefined => {
+    if (raw === undefined) return undefined
+    return canonicalRoots.get(raw) ?? raw
+  }
+
   // ---- Optional service wiring -------------------------------------------
   ctx.inject(['sessionProjections'], (scope) => {
     modes.attach(scope.sessionProjections)
@@ -120,8 +137,9 @@ export function apply(ctx: Context, rawConfig: ResolvedConfig) {
       const session = exec.agent?.session
       // Agentless calls have no session to authorize: fail closed to inspect.
       const mode: GuardMode = session === undefined ? 'inspect' : modes.effective(session).mode
-      const workspaceRoot = session?.header.cwd
-      const base = resolveWorkingDirectory(scope, session) ?? workspaceRoot
+      const workspaceRoot = await canonicalRoot(session?.header.cwd)
+      const additionalWritableRoots = await Promise.all(config.additionalWritableRoots.map(canonicalRoot))
+      const base = resolveWorkingDirectory(scope, session) ?? session?.header.cwd
       const classifier: ClassifierContext = {
         platform,
         protectedRoots,
@@ -134,7 +152,7 @@ export function apply(ctx: Context, rawConfig: ResolvedConfig) {
           workspaceRoot,
           workingDirectory: base,
           operation,
-          additionalWritableRoots: config.additionalWritableRoots,
+          additionalWritableRoots: additionalWritableRoots.filter((root): root is string => root !== undefined),
           unknownToolPolicy: config.unknownToolPolicy,
         },
         protectedRoots,
@@ -244,7 +262,7 @@ export function apply(ctx: Context, rawConfig: ResolvedConfig) {
       reasonCode: result.reasonCode,
       overridable: result.overridable,
       targets: operation.targets.map((target) =>
-        sanitizeTarget(target.absolute, session.header.cwd, protectedRoots, platform),
+        sanitizeTarget(target.absolute, canonicalRootSync(session.header.cwd), protectedRoots, platform),
       ),
       tags: operation.tags,
       ...(approval === undefined ? {} : { approval }),
@@ -277,8 +295,25 @@ export function apply(ctx: Context, rawConfig: ResolvedConfig) {
   function guardReason(execution: ToolExecution, scope: Context): string | undefined {
     const session = execution.agent?.session
     const mode: GuardMode = session === undefined ? 'inspect' : modes.effective(session).mode
-    const workspaceRoot = session?.header.cwd
-    const base = resolveWorkingDirectory(scope, session) ?? workspaceRoot
+    // The guard works on lexical facts (no filesystem access), so the workspace
+    // is offered under every spelling known for it: the canonical form the
+    // async gate cached, plus the raw session spelling. A path counts as
+    // outside only when it escapes every spelling, which keeps short-name and
+    // symlink aliases from producing false denials here while still stopping
+    // genuine escapes.
+    const rawRoot = session?.header.cwd
+    const workspaceRoot = canonicalRootSync(rawRoot)
+    const rootSpellings = new Set<string>()
+    if (workspaceRoot !== undefined) rootSpellings.add(workspaceRoot)
+    if (rawRoot !== undefined) rootSpellings.add(rawRoot)
+    const additionalWritableRoots = [
+      ...config.additionalWritableRoots.flatMap((root) => {
+        const canonical = canonicalRootSync(root)
+        return canonical === undefined ? [root] : [canonical, root]
+      }),
+      ...rootSpellings,
+    ].filter((root, index, all) => all.indexOf(root) === index)
+    const base = resolveWorkingDirectory(scope, session) ?? rawRoot
     let operation: ClassifiedOperation
     try {
       operation = classifyWithLexicalPaths(execution.name, execution.arguments, base)
@@ -291,7 +326,7 @@ export function apply(ctx: Context, rawConfig: ResolvedConfig) {
         workspaceRoot,
         workingDirectory: base,
         operation,
-        additionalWritableRoots: config.additionalWritableRoots,
+        additionalWritableRoots,
         unknownToolPolicy: config.unknownToolPolicy,
       },
       protectedRoots,

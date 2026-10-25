@@ -64,25 +64,30 @@ function evaluate(input: PolicyInput, protectedRoots: readonly ProtectedRoot[], 
   const tags = new Set(operation.tags)
 
   // ---- Protected-path hits ----------------------------------------------
+  // Match both the lexical and the canonical spelling: a protected root spelled
+  // with a Windows short-name alias must not slip through.
   const writeHits: ProtectedHit[] = []
   const readHits: ProtectedHit[] = []
+  const hitOf = (target: ClassifiedOperation['writeTargets'][number]): ProtectedHit | undefined =>
+    matchProtectedPath(target.absolute, protectedRoots, platform)
+    ?? matchProtectedPath(target.real, protectedRoots, platform)
   for (const target of operation.writeTargets) {
-    const match = matchProtectedPath(target.absolute, protectedRoots, platform)
+    const match = hitOf(target)
     if (match !== undefined) writeHits.push({ label: match.label, kind: match.kind })
   }
   for (const target of operation.readTargets) {
-    const match = matchProtectedPath(target.absolute, protectedRoots, platform)
+    const match = hitOf(target)
     if (match !== undefined) readHits.push({ label: match.label, kind: match.kind })
   }
 
   // ---- Out-of-workspace write targets ------------------------------------
   // DSH's own privileged management surfaces (plugin installation) write into
-  // the DSH home by design; DSH gates those tools itself, so their storage
+  // the DSH home by design; DSH gates those tools themselves, so their storage
   // writes are not treated as workspace escapes here.
   const privileged = PRIVILEGED_FIR_PARTY_TOOLS.has(operation.toolName)
   const policyWriteTargets = privileged
     ? operation.writeTargets.filter((target) => {
-      const match = matchProtectedPath(target.absolute, protectedRoots, platform)
+      const match = hitOf(target)
       return match === undefined || match.kind !== 'dsh-home'
     })
     : operation.writeTargets
