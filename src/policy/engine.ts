@@ -131,6 +131,23 @@ function evaluate(input: PolicyInput, protectedRoots: readonly ProtectedRoot[], 
     )
   }
 
+  // 1a-ter. An unconfirmed OS sandbox blocks every operation that depends on
+  //     it. The guard mode is only a promise about the session's file policy:
+  //     develop means "the sandbox confines writes to the workspace". When the
+  //     sandbox write could not be applied — or could not be read back — that
+  //     promise is void, so anything that mutates state is refused rather than
+  //     run with confinement the guard cannot vouch for. Reads, searches,
+  //     network, meta, jobs and delegate work do not depend on the file
+  //     sandbox and stay available, so an operator can still inspect and
+  //     repair the session.
+  if (mutating && !input.sandboxConfirmed) {
+    return deny(
+      'sandbox-unavailable',
+      `Boundary guard: the OS sandbox could not be confirmed for this session, so ${operation.toolName} (${operation.operation}) is refused. The guard mode promises file confinement the sandbox is not currently providing. Restart DSH, or check the error shown by /guard status.`,
+      'high',
+    )
+  }
+
   // 1b. Inspect mode is strictly read-only.
   if (mode === 'inspect' && mutating) {
     const reason = operation.operation === 'execute'

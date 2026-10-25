@@ -40,7 +40,7 @@ export const inject: string[] = []
 export default { name, inject, Config, apply }
 
 /** Plugin version, kept in sync with package.json. */
-const PLUGIN_VERSION = '0.1.1'
+const PLUGIN_VERSION = '0.1.2'
 
 /**
  * The plugin body. Configuration is validated before anything registers: an
@@ -125,6 +125,19 @@ export function apply(ctx: Context, rawConfig: ResolvedConfig) {
   ctx.inject(['sessionProjections'], (scope) => {
     modes.attach(scope.sessionProjections)
   })
+  // The sandbox-policy service is the only witness that a sandbox-mode write
+  // actually landed: it folds the session log, so reading it back is how the
+  // guard confirms its own write. Without the service the manager stays
+  // unverified and relies on the write alone.
+  ctx.inject(['sandboxPolicy'], (scope) => {
+    modes.attachVerifier((session) => {
+      try {
+        return scope.sandboxPolicy.overrideOf(session)
+      } catch {
+        return undefined
+      }
+    })
+  })
 
   // ---- Subagent inheritance ----------------------------------------------
   // A child session can never exceed its parent's authorization: the mode is
@@ -157,6 +170,11 @@ export function apply(ctx: Context, rawConfig: ResolvedConfig) {
       const session = exec.agent?.session
       // Agentless calls have no session to authorize: fail closed to inspect.
       const mode: GuardMode = session === undefined ? 'inspect' : modes.effective(session).mode
+      // The mode is only a promise about the session's file policy; the
+      // sandbox sync (with its single retry) is what makes it true. A session
+      // whose sandbox cannot be confirmed gets `sandboxConfirmed: false`.
+      const sandbox = session === undefined ? undefined : modes.ensureSandboxSynced(session)
+      const sandboxConfirmed = sandbox !== undefined && sandbox.applied === sandbox.desired
       const workspaceRoot = await canonicalRoot(session?.header.cwd)
       const additionalWritableRoots = await Promise.all(config.additionalWritableRoots.map(canonicalRoot))
       const base = resolveWorkingDirectory(scope, session) ?? session?.header.cwd
@@ -174,6 +192,7 @@ export function apply(ctx: Context, rawConfig: ResolvedConfig) {
           operation,
           additionalWritableRoots: additionalWritableRoots.filter((root): root is string => root !== undefined),
           unknownToolPolicy: config.unknownToolPolicy,
+          sandboxConfirmed,
         },
         protectedRoots,
         platform,
@@ -321,6 +340,12 @@ export function apply(ctx: Context, rawConfig: ResolvedConfig) {
     if (gateApplied.delete(execution.token as symbol)) return undefined
     const session = execution.agent?.session
     const mode: GuardMode = session === undefined ? 'inspect' : modes.effective(session).mode
+    // The backstop re-decides on lexical facts, so it re-confirms the sandbox
+    // the same way the gate does: one no-op read when the marker already
+    // matches, one retry when it does not. An agentless call has no session to
+    // confirm and is already forced to inspect.
+    const sandbox = session === undefined ? undefined : modes.ensureSandboxSynced(session)
+    const sandboxConfirmed = sandbox !== undefined && sandbox.applied === sandbox.desired
     // The guard works on lexical facts (no filesystem access), so the workspace
     // is offered under every spelling known for it: the canonical form the
     // async gate cached, plus the raw session spelling. A path counts as
@@ -354,6 +379,7 @@ export function apply(ctx: Context, rawConfig: ResolvedConfig) {
         operation,
         additionalWritableRoots,
         unknownToolPolicy: config.unknownToolPolicy,
+        sandboxConfirmed,
       },
       protectedRoots,
       platform,

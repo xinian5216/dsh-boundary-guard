@@ -16,7 +16,7 @@
 
 | 模式 | 沙箱文件策略 | 用途 |
 |---|---|---|
-| `inspect`（排查） | `read-only` | 分析与排查：读取、搜索、只读 Git（`status`、`log`、`diff`、`show`）与只读 shell 命令（`ls`、`cat`、`echo`）。禁止一切写入、执行与无法分类的工具——审批也不能解除。 |
+| `inspect`（排查） | `read-only` | 分析与排查：读取、搜索、来自显式子命令白名单的只读 Git（`status`、`log`、`diff`、`show`、`branch -a`、`config --list`、`reflog`、`stash list` 等）与只读 shell 命令（`ls`、`cat`、`echo`）。禁止一切写入、执行、无法分类的工具以及白名单之外的 Git 子命令——审批也不能解除。 |
 | `develop`（开发） | `workspace-write` | 日常开发：工作区内写入；高风险操作需审批。 |
 | `maintain`（维护） | `danger-full-access` | 限时维护：每个高风险操作单独审批；受保护位置仍然禁止。 |
 
@@ -25,24 +25,30 @@
 重启后保留，过期后自动回落到 `develop`。子 Agent 原样继承父级模式；父级未知时
 以 fail-closed 方式落入 `inspect`。
 
+每种模式的沙箱文件策略不只是"被请求"，而是"被确认"：守卫会写入会话的沙箱
+模式，再从沙箱策略服务读回校验，确认失败时每次工具调用重试一次。沙箱无法被
+确认的会话会拒绝一切变更类操作（`sandbox-unavailable`），而不是带着比模式承诺
+更弱的隔离继续执行；读取、搜索与委派仍然可用，因此会话始终可排查、可修复。
+`/guard status` 会报告已应用的模式、是否已读回校验以及最近的错误。
+
 ## 安装
 
 要求：DeepSeek Harness `0.2.1-rc.3` 或任何 `0.2.x` 运行时
 （`engines.dsh: ">=0.2.1-rc.3 <0.3.0"`），Node.js 24。
 
-从 [v0.1.0 Release](https://github.com/xinian5216/dsh-boundary-guard/releases/tag/v0.1.0)
-下载打包好的 bundle（`dsh-boundary-guard-0.1.0.tgz`，SHA-256 见随附的
+从 [v0.1.2 Release](https://github.com/xinian5216/dsh-boundary-guard/releases/tag/v0.1.2)
+下载打包好的 bundle（`dsh-boundary-guard-0.1.2.tgz`，SHA-256 见随附的
 `SHA256SUMS`），然后通过官方插件管理器安装：
 
 ```sh
 # 从 release 压缩包安装
-dsh plugin --profile <profile> add ./dsh-boundary-guard-0.1.0.tgz
+dsh plugin --profile <profile> add ./dsh-boundary-guard-0.1.2.tgz
 
 # 或从本地构建安装
 git clone https://github.com/xinian5216/dsh-boundary-guard.git
 cd dsh-boundary-guard
 pnpm install && pnpm run build && pnpm pack
-dsh plugin --profile <profile> add ./dsh-boundary-guard-0.1.0.tgz
+dsh plugin --profile <profile> add ./dsh-boundary-guard-0.1.2.tgz
 ```
 
 在 Web 客户端中也可以通过 **Plugins → Install** 选择该 `.tgz` 安装。profile 必须
@@ -73,7 +79,7 @@ dsh plugin --profile <profile> remove dsh-boundary-guard
 
 | 命令 | 作用 |
 |---|---|
-| `/guard status` | 当前模式、沙箱策略、工作区、审计与快照状态、受保护位置数量 |
+| `/guard status` | 当前模式、沙箱文件策略（已应用 / 已读回 / 最近错误）、工作区、审计与快照状态、受保护位置数量 |
 | `/guard inspect` | 进入排查模式（沙箱 `read-only`） |
 | `/guard develop` | 进入开发模式（沙箱 `workspace-write`） |
 | `/guard maintain [分钟]` | 经确认后进入维护模式，授权有上限（默认与最大值 30 分钟） |
@@ -102,8 +108,10 @@ maintain 模式下读取凭据材料需要审批，在 inspect 模式下直接�
 在 develop 与 maintain 模式下，以下操作会通过 DSH 审批界面请求批准：删除文件、
 覆盖高价值配置（`package.json`、锁文件、`tsconfig`、CI 工作流、Dockerfile 等）、
 批量操作、依赖与系统安装、Git 状态变更、历史重写与远程写入、远程会话与上传、
-破坏性命令、提权、系统配置变更、守卫无法完全分析的动态执行、沙箱升级参数、
-工作区外写入（仅 maintain）、以及无法识别的工具。
+破坏性命令、提权、系统配置变更、守卫无法完全分析的动态执行（包括 `cmd /c` 等
+嵌套不透明 shell，以及通过 `-c` 设置 `alias.*`、`core.pager`、`diff.external`
+的 Git 调用）、沙箱升级参数、工作区外写入（仅 maintain）、只读白名单之外的 Git
+子命令、以及无法识别的工具。
 
 审批是针对当次调用的一次性授权。拒绝、取消以及审批通道不可用都会导致操作被
 拒绝——绝不会静默重试。
@@ -128,8 +136,10 @@ pnpm run build     # 产出 bundle 所需的 lib/
   模式管理）。
 - `tests/integration` —— 真实 DSH 流水线：ToolRuntime、fs 与 pwsh 工具、
   Windows ACL 沙箱提供者、审批服务与命令注册表。
-- `tests/security` —— 15 项验收回归（模式隔离、受保护路径、审批结果、符号链接
-  逃逸、子 Agent 继承、配置 fail-closed、审计保密、多会话隔离、卸载）。
+- `tests/security` —— 验收回归（模式隔离、受保护路径、审批结果、符号链接逃逸、
+  子 Agent 继承、配置 fail-closed、审计保密、多会话隔离、卸载），以及各版本的
+  加固回归：inspect 模式对无法分类工具与"看起来只读"的 Git 命令的边界、沙箱同步
+  失败与恢复、跨平台 develop 体验。
 
 ## 文档
 

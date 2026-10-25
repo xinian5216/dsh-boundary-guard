@@ -1,6 +1,6 @@
 {
   "name": "dsh-boundary-guard",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Boundary guard for DeepSeek Harness: inspect/develop/maintain modes, approval-gated high-risk operations, protected-path discovery, and sanitized audit logging.",
   "license": "MIT",
   "type": "module",
@@ -35,7 +35,7 @@
   "dependencies": {
     "@deepseek-ai/dsh-home-paths": "0.2.1-rc.3",
     "@deepseek-ai/schemastery": "3.18.5",
-    "zod": "4.4.3"
+    "zod": "4.6.7"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "~4.0.5"

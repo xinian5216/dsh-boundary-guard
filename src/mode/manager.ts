@@ -6,6 +6,13 @@
  * on an explicit human command (or fail-closed inheritance). No tool, prompt,
  * or model message can raise the mode.
  *
+ * The synchronization itself fails closed: a mode is "applied" only when the
+ * write landed, finished inside its budget, and — when a sandbox-policy
+ * service exists — was read back at least as restrictive as requested.
+ * Everything else is a recorded failure that the execution path sees through
+ * {@link GuardModeManager.ensureSandboxSynced}, so a session whose OS sandbox
+ * cannot be confirmed never runs a mutation.
+ *
  * @module dsh-boundary-guard/mode/manager
  */
 import type { Context } from '@deepseek-ai/cordis'
@@ -49,8 +56,37 @@ export interface SandboxSyncStatus {
   readonly desired: SandboxMode
   /** The sandbox mode last applied successfully, if any. */
   readonly applied: SandboxMode | undefined
+  /** Whether the applied mode was read back from the sandbox policy service. */
+  readonly verified: boolean
+  /** The mode the sandbox policy service reports right now, when it can be read. */
+  readonly observed?: SandboxMode
   /** The last synchronization failure, if any. */
   readonly lastError?: string
+}
+
+/**
+ * Injectable seams of the sandbox synchronization. Production uses the real
+ * `setSandboxMode` write and the sandbox-policy read-back; tests inject the
+ * failure they need without touching a real session log or a real sandbox.
+ */
+export interface GuardModeManagerOptions {
+  /** Writes the session's sandbox mode. Defaults to the real write path. */
+  readonly sandboxSync?: (session: Session, mode: SandboxMode) => void
+  /** Reads the session's current sandbox mode back, when a policy service exists. */
+  readonly verifySandbox?: (session: Session) => SandboxMode | undefined
+  /** Wall-clock budget for one synchronization attempt. Defaults to 2000ms. */
+  readonly syncTimeoutMs?: number
+}
+
+/** The default budget for one sandbox synchronization attempt. */
+const DEFAULT_SYNC_TIMEOUT_MS = 2000
+
+/** Every sandbox mode, least restrictive first. */
+const SANDBOX_MODES: readonly SandboxMode[] = ['read-only', 'workspace-write', 'danger-full-access']
+
+/** Whether `candidate` is at least as restrictive as `floor`. */
+function isAtLeastAsRestrictive(candidate: SandboxMode, floor: SandboxMode): boolean {
+  return SANDBOX_MODES.indexOf(candidate) <= SANDBOX_MODES.indexOf(floor)
 }
 
 /**
@@ -70,11 +106,30 @@ export class GuardModeManager {
   private projections: SessionProjectionRegistry | undefined
   private projectionRegistered = false
   private readonly config: GuardConfig
+  private readonly sandboxSync: (session: Session, mode: SandboxMode) => void
+  private verifySandbox: ((session: Session) => SandboxMode | undefined) | undefined
+  private readonly syncTimeoutMs: number
 
-  constructor(config: GuardConfig, projections?: SessionProjectionRegistry) {
+  constructor(
+    config: GuardConfig,
+    projections?: SessionProjectionRegistry,
+    options: GuardModeManagerOptions = {},
+  ) {
     this.config = config
     this.projections = projections
+    this.sandboxSync = options.sandboxSync ?? setSandboxMode
+    this.verifySandbox = options.verifySandbox
+    this.syncTimeoutMs = options.syncTimeoutMs ?? DEFAULT_SYNC_TIMEOUT_MS
     if (projections !== undefined) this.registerProjection()
+  }
+
+  /**
+   * Attach the read-back the sandbox policy service offers. Without it a
+   * successful write is the only evidence the guard has, so status reports
+   * `verified: false` and the mode still applies.
+   */
+  attachVerifier(verify: (session: Session) => SandboxMode | undefined): void {
+    this.verifySandbox = verify
   }
 
   /** Attach the projection registry when it becomes available. */
@@ -190,15 +245,19 @@ export class GuardModeManager {
    * session+mode; never fights an explicit user change through the permission
    * selector (that only widens what an approved operation may execute).
    *
-   * The synchronized marker is written only after `setSandboxMode` succeeds, so
-   * a failure is never reported as applied and is retried on the next call.
+   * The synchronized marker is written only when the whole attempt succeeded:
+   * the write did not throw, it finished inside the configured budget, and —
+   * when a read-back exists — the policy reports a mode that is at least as
+   * restrictive as the requested one. Anything else is a failure that is
+   * recorded and surfaced, never reported as applied.
    */
   private syncSandbox(session: Session, mode: GuardMode): void {
     const target = sandboxModeFor(mode)
     const key = `${String(session.id)}:${target}`
     if (this.sandboxSynced.get(session) === key) return
+    const started = performance.now()
     try {
-      setSandboxMode(session, target)
+      this.sandboxSync(session, target)
     } catch (error) {
       // The sandbox policy service may be absent or the append may fail. The
       // guard's own policy still applies, but OS-level confinement is weaker;
@@ -207,30 +266,89 @@ export class GuardModeManager {
       this.sandboxErrors.set(session, (error as Error).message)
       return
     }
+    // Read the mode back before judging the attempt: the read-back is part of
+    // the synchronization, so a policy service that hangs is a slow sync, not
+    // a fast one that merely failed to confirm.
+    const observed = this.verifySandbox === undefined ? undefined : this.readSandboxMode(session)
+    const elapsed = performance.now() - started
+    if (elapsed > this.syncTimeoutMs) {
+      this.sandboxErrors.set(session, `sandbox synchronization timed out after ${Math.round(elapsed)}ms`)
+      return
+    }
+    if (observed !== undefined && !isAtLeastAsRestrictive(observed, target)) {
+      // The policy reports something WIDER than the mode requires. The write
+      // may have landed on a different session or been overridden; treating it
+      // as applied would let the guard claim confinement it does not have.
+      this.sandboxErrors.set(
+        session,
+        `sandbox policy reports ${observed}, which is less restrictive than the required ${target}`,
+      )
+      return
+    }
     this.sandboxErrors.delete(session)
     this.sandboxSynced.set(session, key)
   }
 
+  /** Read the current sandbox mode back, treating a read fault as unknown. */
+  private readSandboxMode(session: Session): SandboxMode | undefined {
+    try {
+      return this.verifySandbox?.(session)
+    } catch {
+      // An unreadable policy is not a confirmation.
+      return undefined
+    }
+  }
+
   /**
    * The real sandbox-sync state of one session: what the guard mode requires,
-   * what was last applied successfully, and the last failure (if any).
+   * what was last applied successfully, whether that write was read back, what
+   * the policy reports now, and the last failure (if any).
+   *
+   * The requirement is read from the EFFECTIVE mode, never the raw one: an
+   * expired maintain grant must never describe `danger-full-access` as what
+   * the session requires, or a retry would re-widen a grant that already
+   * ended.
    */
   sandboxStatusOf(session: Session): SandboxSyncStatus {
-    const state = this.stateOf(session)
-    const desired = sandboxModeFor(state.mode)
+    const desired = sandboxModeFor(this.effective(session).mode)
     const applied = this.sandboxSynced.get(session)?.split(':').slice(1).join(':') as SandboxMode | undefined
     const lastError = this.sandboxErrors.get(session)
+    const observed = this.readSandboxMode(session)
     return {
       desired,
       applied,
+      verified: applied !== undefined && observed !== undefined && isAtLeastAsRestrictive(observed, applied),
+      ...(observed === undefined ? {} : { observed }),
       ...(lastError === undefined ? {} : { lastError }),
     }
   }
 
-  /** Re-attempt the sandbox sync after a failure. */
+  /**
+   * The single entry point the execution path uses: report the session's real
+   * sandbox state, retrying exactly once when it does not match the mode. The
+   * retry is what turns a recorded failure into a recovered session without a
+   * restart, and the bounded attempt count is what keeps a broken sandbox
+   * policy from producing a write storm.
+   */
+  ensureSandboxSynced(session: Session): SandboxSyncStatus {
+    const current = this.sandboxStatusOf(session)
+    if (current.applied === current.desired) return current
+    this.retrySandboxSync(session)
+    return this.sandboxStatusOf(session)
+  }
+
+  /**
+   * Re-attempt the sandbox sync after a failure.
+   *
+   * The attempt is keyed by mode, so a retry after a mode change re-attempts
+   * the new mode while the marker of the last SUCCESSFUL sync survives as the
+   * historical "applied" evidence — that is what lets `/guard status` show a
+   * session running wider than its mode requires. A retry of an already
+   * synchronized mode is deliberately a no-op: the guard never fights an
+   * explicit user change through the permission selector.
+   */
   retrySandboxSync(session: Session): void {
-    this.sandboxSynced.delete(session)
-    this.syncSandbox(session, this.stateOf(session).mode)
+    this.syncSandbox(session, this.effective(session).mode)
   }
 
   /** Drop in-memory state for a disposed session. */

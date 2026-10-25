@@ -24,7 +24,7 @@ to trust the guard, and for contributors changing it.
 |---|---|---|
 | Policy gate | `tools/pre-execute` listener | Approvable decisions with audited reasons; bypassable in principle by another `prepend` listener |
 | Final backstop | `ctx.tools.guard()` | Monotonic denial: no later listener can re-allow a denial |
-| OS confinement | DSH sandbox policy + platform runner (Windows ACL restricted token, bwrap/Landlock/Seatbelt) | Real file-effect boundary for confined capabilities; partial on Windows (reads unconfined, hard-link and AppContainer caveats documented by DSH) |
+| OS confinement | DSH sandbox policy + platform runner (Windows ACL restricted token, bwrap/Landlock/Seatbelt) | Real file-effect boundary for confined capabilities; the guard confirms the mode the policy reports and refuses mutations while it cannot (see C); partial on Windows (reads unconfined, hard-link and AppContainer caveats documented by DSH) |
 | Human decision | `ctx.approval` seam | One-shot grants only; missing answerers fail closed |
 | Human entry | `ctx.commands.register()` | Mode changes only through a user-typed slash command |
 
@@ -65,6 +65,49 @@ to trust the guard, and for contributors changing it.
   `git diff`, `ls`, `cat`, and `echo` work in inspect mode. `git fetch` is
   deliberately not read-only: it writes refs and objects into the repository.
 
+### B3. The Git read-only boundary
+
+Inspect mode's read-only Git capability is granted by an explicit subcommand and
+argument allowlist, never by the command name. The shell analyzer parses Git
+global options (`-C <path>`, `-c <name>=<value>`, `--git-dir`, `--work-tree`,
+`--namespace`, `--exec-path`, `--super-prefix`, the pathspec and pager flags) to
+find the real subcommand, because a global option must never be able to disguise
+a mutating subcommand as a read. A Git segment is treated as provably read-only
+only when it is a single segment with no substitution construct, no redirect or
+write targets, a subcommand on the read allowlist, arguments that satisfy that
+subcommand's own rule, and no behavior-changing global option. The options that
+can make Git run a program the guard cannot analyze — `-c`/`--config`,
+`--config-env`, `--exec-path`, `--namespace`, `--super-prefix`, and the
+pager-forcing `-p`/`--paginate` — are tagged `dynamic-execution` and require
+approval, because they can define `alias.*`, `core.pager`, `credential.helper`,
+or `diff.external`. Values of `-C`, `--git-dir`, and `--work-tree` are collected
+as path inputs (read targets for a read-classified subcommand, write targets for
+a mutating one) so the protected-path and out-of-workspace rules still apply.
+
+Per-subcommand rules keep write side effects out of the read set: `config` reads
+only with an explicit read flag or at most one positional and no write flag;
+`branch` and `tag` read only with no positional and no create/delete/move flag;
+`diff`, `show`, and `format-patch` are never reads when `--output` (or
+`-o`/`--output-directory`) names a file, which is collected as a write target,
+and `--ext-diff`/`--textconv` are dynamic execution; `reflog` reads only for a
+bare `reflog` or `reflog show`; `symbolic-ref` reads only with at most one
+positional; `worktree list`, `stash list`/`show`, and `notes list`/`show` read;
+`remote show` is a network read rather than a local read; and any subcommand on
+no known list — including a bare `git`, `git help`, `git fsck`, and
+`git bisect` — is tagged `unknown-command` so the engine asks instead of
+silently allowing it.
+
+Residual limits of the Git rules: the analyzer is a heuristic, not a sandbox. It
+does not model every Git subcommand — an unlisted one is escalated for approval
+rather than proven safe, which is the intended failure mode. It does not follow
+`include.path` indirection, aliases defined in a repository's own configuration
+rather than on the command line, or programs Git may invoke through
+`core.pager`/`diff.external` when those are not named on the command line; those
+are covered by tagging the options that set them. The `--output` file of
+`diff`/`show`/`format-patch` is collected as a write target; other file-writing
+options of other subcommands are not exhaustively enumerated, which is why
+unrecognized subcommands are escalated rather than allowed.
+
 ### C. The model tries to raise its own privileges
 
 * Mode state changes only through the `/guard` command family, which runs on
@@ -76,15 +119,32 @@ to trust the guard, and for contributors changing it.
 * Subagent children inherit the parent's mode verbatim; an unknown parent
   fails closed to `inspect`.
 * The OS sandbox is synchronized with the guard mode from the first touch of a
-  session (not only on mode changes), and a synchronization failure is recorded,
-  reported by `/guard status`, and retried — it is never treated as success.
+  session (not only on mode changes), and a mode counts as applied only when
+  the write landed, finished inside a two-second budget, and — when the
+  `sandboxPolicy` service is composed — was read back at least as restrictive
+  as requested; a wider read-back is a failure, not a success.
+* A session whose sandbox cannot be confirmed is not silently degraded: the
+  execution path calls `ensureSandboxSynced`, which retries the write once per
+  execution, and every mutating operation (`write`/`delete`/`execute`/`admin`)
+  is denied with reason `sandbox-unavailable` until the confirmation succeeds.
+  Reads, searches, network, meta, jobs and delegate operations are unaffected,
+  so the session stays inspectable and repairable, and a transient failure
+  recovers on the next call without a restart.
+* A failed mode change never leaves the previous, wider mode looking current:
+  `/guard status` reports the required mode, the mode last applied
+  successfully, whether that write was read back, and what the policy reports
+  now. Known limit: the guard can confirm that the policy *says* the right
+  mode, not that the platform runner enforces it — that remains the runner's
+  guarantee.
 
 ### D. The model rewrites a denied command to evade analysis
 
 * Shell analysis is heuristic. A rewritten command that the analyzer does not
   recognize becomes `dynamic-execution` (approval required) rather than being
   allowed silently, and destructive or remote patterns are matched across
-  segments and the whole command string.
+  segments and the whole command string. Nested opaque shells are treated the
+  same way on every platform: `sh -c`, `bash -c`, and Windows `cmd /c|/k|/r` are
+  dynamic execution because their inner text is parsed by another shell.
 * The sandbox still confines the *effect*: in develop mode an obfuscated write
   outside the workspace fails at the OS level regardless of what the analyzer
   understood.
@@ -155,6 +215,15 @@ to trust the guard, and for contributors changing it.
    cover analyzed operations. An approved opaque script that reaches a protected
    location without naming it in text is a documented residual risk; in maintain
    mode the approval prompt is the only boundary.
+10. **Every Git subcommand.** The read-only Git boundary is an allowlist, so an
+    unlisted subcommand is escalated for approval instead of proven safe. Git
+    options and configuration that make Git run another program are tagged
+    dynamic execution, but configuration read from the repository's own files
+    (`include.path`, repository-local aliases) is not followed. See B3.
+11. **That the platform runner enforces the confirmed mode.** The guard confirms
+    what the sandbox policy service reports, and refuses to run mutations while
+    it cannot confirm it. Whether the OS-level runner then enforces that mode is
+    the runner's guarantee (see the table above and item 7).
 
 ## Security-relevant configuration defaults
 
