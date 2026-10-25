@@ -26,6 +26,7 @@ import * as toolPwsh from '@deepseek-ai/dsh-tool-pwsh'
 import SandboxBashExecutor from '@deepseek-ai/dsh-bash-sandbox'
 import * as toolBash from '@deepseek-ai/dsh-tool-bash'
 import * as toolFs from '@deepseek-ai/dsh-tool-fs'
+import * as toolFsSearch from '@deepseek-ai/dsh-tool-fs-search'
 import { SESSION_FORMAT_VERSION, Session } from '@deepseek-ai/dsh-session'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import type { Agent } from '@deepseek-ai/dsh-agent'
@@ -98,20 +99,20 @@ export async function createGuardEnv(options: GuardTestEnvOptions = {}): Promise
   await ctx.plugin(LocalAttachmentStore)
   await ctx.plugin(LocalFileSystem)
   await ctx.plugin(WorkingDirectoryService, { defaultDirectory: workspace.root })
+  // Subprocess and jobs are shared by the search tools (ripgrep) and the
+  // confined shell stack, so they are mounted before both.
+  await ctx.plugin(LocalJobService)
+  await ctx.plugin(LocalSubprocess)
+  await ctx.plugin(shellEnv)
   await ctx.plugin(toolFs)
+  await ctx.plugin(toolFsSearch, { sampleOverCapGlobResults: false })
   await ctx.plugin(ApprovalService, { policy: 'ask' })
   await ctx.plugin(CommandRuntime)
   // The confined shell stack: PowerShell on Windows, Bash elsewhere.
   if (process.platform === 'win32') {
-    await ctx.plugin(LocalJobService)
-    await ctx.plugin(LocalSubprocess)
-    await ctx.plugin(shellEnv)
     await ctx.plugin(SandboxPwshExecutor)
     await ctx.plugin(toolPwsh)
   } else {
-    await ctx.plugin(LocalJobService)
-    await ctx.plugin(LocalSubprocess)
-    await ctx.plugin(shellEnv)
     await ctx.plugin(SandboxBashExecutor)
     await ctx.plugin(toolBash)
   }

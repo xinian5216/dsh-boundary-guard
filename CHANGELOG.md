@@ -5,6 +5,50 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1] - 2026-10-25
+
+Hardening release driven by a review of v0.1.0. Every item below was first
+reproduced with a failing test, then fixed, then locked in by a regression test.
+
+### Fixed
+
+- **Sandbox synchronization on session start.** A session that never changed
+  mode kept the deployment sandbox default (usually `workspace-write`) even in
+  inspect mode. The sandbox is now synchronized with the guard mode from the
+  first touch of a session.
+- **Sandbox sync failures are visible and retryable.** The "already synced"
+  marker was written before the write succeeded and errors were swallowed, so a
+  failed sync was reported as success and never retried. The marker is now
+  written only after success, the failure is recorded, `/guard status` reports
+  the real state (desired / applied / last error), and `retrySandboxSync()`
+  re-attempts it.
+- **Inspect mode can no longer approve unclassified tools.** An unknown tool
+  (for example an MCP tool) reached the approval seam in inspect mode and could
+  execute with side effects once approved. Inspect now denies unclassified
+  tools outright, approval or not.
+- **Read-only shell commands in inspect mode.** `git status`, `git log`,
+  `git diff`, `git show`, `ls`, `cat`, and `echo` were classified as
+  executions and blocked. A command is now classified as a read only when it is
+  provably read-only: a single segment, no substitution constructs, no write
+  target, and either only read-classified Git tags or a command on an explicit
+  read-only allowlist. `git fetch` remains an execution (it writes refs).
+
+### Added
+
+- **Indirect protected-path heuristic.** A mutating command whose text names a
+  protected location (`.ssh`, `.aws`, `.env`, `credentials`, the DSH home,
+  …) is denied in every mode — including maintain — even when its write target
+  could not be resolved (variables, nested shells, encoded payloads).
+- Seven new regression tests (sandbox sync semantics, inspect unknown tools,
+  inspect read-only commands, indirect protected writes, cross-platform develop
+  experience, read-only classification, protected-mention detection).
+
+### Changed
+
+- `docs/THREAT_MODEL.md` now states the residual risk precisely: protected
+  locations are guaranteed against *analyzed* operations, not against arbitrary
+  approved opaque code, and lists the inspect-mode unclassified-tool rule.
+
 ## [0.1.0] - 2026-10-25
 
 First release of DSH Boundary Guard.
@@ -68,4 +112,5 @@ First release of DSH Boundary Guard.
   provider credentials; verification stops at the model boundary. See
   `docs/COMPATIBILITY.md`.
 
-[0.1.0]: https://github.com/PLACEHOLDER/dsh-boundary-guard/releases/tag/v0.1.0
+[0.1.1]: https://github.com/xinian5216/dsh-boundary-guard/releases/tag/v0.1.1
+[0.1.0]: https://github.com/xinian5216/dsh-boundary-guard/releases/tag/v0.1.0

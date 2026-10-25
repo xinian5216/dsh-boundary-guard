@@ -170,8 +170,16 @@ function renderStatus(session: Agent['session'], deps: GuardCommandContext): str
   if (state.mode === 'maintain' && state.maintainExpiresAt !== null) {
     lines.push(`Maintain grant expires: ${new Date(state.maintainExpiresAt).toLocaleString()}`)
   }
-  const sandbox = effective.mode === 'inspect' ? 'read-only' : effective.mode === 'develop' ? 'workspace-write' : 'danger-full-access'
-  lines.push(`Sandbox file policy: ${sandbox}`)
+  // Report the real sandbox state: what the mode requires, what was actually
+  // applied, and any synchronization failure.
+  const sandbox = deps.modes.sandboxStatusOf(session)
+  if (sandbox.applied === undefined) {
+    lines.push(`Sandbox file policy: ${sandbox.desired} (not confirmed applied${sandbox.lastError === undefined ? '' : `: ${sandbox.lastError}`})`)
+  } else if (sandbox.applied !== sandbox.desired) {
+    lines.push(`Sandbox file policy: ${sandbox.desired} (last applied: ${sandbox.applied})`)
+  } else {
+    lines.push(`Sandbox file policy: ${sandbox.desired}`)
+  }
   lines.push(`Workspace: ${session.header.cwd ?? '(none recorded)'}`)
   lines.push(`Audit: ${deps.audit?.available === true ? 'enabled' : 'unavailable'}`)
   lines.push(`Snapshots: ${deps.snapshots === undefined ? 'disabled' : 'enabled'}`)

@@ -19,7 +19,7 @@ guarantees and limits.
 
 | Mode | Sandbox file policy | What it is for |
 |---|---|---|
-| `inspect` | `read-only` | Analysis and investigation. Reads, searches, and read-only Git. All writes and executions are blocked. |
+| `inspect` | `read-only` | Analysis and investigation. Reads, searches, read-only Git (`status`, `log`, `diff`, `show`) and read-only shell commands (`ls`, `cat`, `echo`). All writes, executions, and unclassified tools are blocked — approvals cannot lift that. |
 | `develop` | `workspace-write` | Daily development. Writes inside the workspace; risky operations ask for approval. |
 | `maintain` | `danger-full-access` | Time-boxed maintenance. Every high-risk operation asks individually; protected paths stay blocked. |
 

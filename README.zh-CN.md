@@ -16,7 +16,7 @@
 
 | 模式 | 沙箱文件策略 | 用途 |
 |---|---|---|
-| `inspect`（排查） | `read-only` | 分析与排查：读取、搜索、只读 Git。禁止一切写入与执行。 |
+| `inspect`（排查） | `read-only` | 分析与排查：读取、搜索、只读 Git（`status`、`log`、`diff`、`show`）与只读 shell 命令（`ls`、`cat`、`echo`）。禁止一切写入、执行与无法分类的工具——审批也不能解除。 |
 | `develop`（开发） | `workspace-write` | 日常开发：工作区内写入；高风险操作需审批。 |
 | `maintain`（维护） | `danger-full-access` | 限时维护：每个高风险操作单独审批；受保护位置仍然禁止。 |
 

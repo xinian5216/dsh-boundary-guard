@@ -113,3 +113,45 @@ test('sandbox escalation arguments are flagged', () => {
   const escalated = analyzeShellCommand('echo hi # sandbox_permissions')
   assert.ok(escalated.tags.includes('sandbox-escalation'))
 })
+
+test('read-only classification covers git read commands', () => {
+  for (const command of ['git status', 'git log --oneline', 'git diff --stat', 'git show --stat HEAD', 'git branch -a']) {
+    const analysis = analyzeShellCommand(command, 'win32')
+    assert.equal(analysis.readOnly, true, `${command} should be read-only`)
+  }
+})
+
+test('git fetch is not read-only (network side effects)', () => {
+  const analysis = analyzeShellCommand('git fetch origin', 'win32')
+  assert.equal(analysis.readOnly, false)
+  assert.ok(analysis.tags.includes('git-network-read'))
+})
+
+test('allowlisted read-only commands are read-only alone', () => {
+  for (const command of ['ls -la', 'pwd', 'cat README.md', 'echo hello', 'Get-ChildItem', 'Get-Content notes.txt']) {
+    const analysis = analyzeShellCommand(command, 'win32')
+    assert.equal(analysis.readOnly, true, `${command} should be read-only`)
+  }
+})
+
+test('redirection, pipelines, and substitution are never read-only', () => {
+  assert.equal(analyzeShellCommand('echo hi > out.txt', 'win32').readOnly, false)
+  assert.equal(analyzeShellCommand('cat a.txt | grep x', 'win32').readOnly, false)
+  assert.equal(analyzeShellCommand('echo $(rm -rf x)', 'win32').readOnly, false)
+  assert.equal(analyzeShellCommand('ls; rm -rf build', 'win32').readOnly, false)
+  assert.equal(analyzeShellCommand('cat `secret.txt`', 'win32').readOnly, false)
+  assert.equal(analyzeShellCommand('git status && git push', 'win32').readOnly, false)
+})
+
+test('protected location mentions are detected', () => {
+  assert.equal(analyzeShellCommand('echo x > ~/.ssh/authorized_keys', 'posix').protectedMention, true)
+  assert.equal(analyzeShellCommand('cmd /c "echo x > %USERPROFILE%\\.ssh\\k"', 'win32').protectedMention, true)
+  assert.equal(analyzeShellCommand('sh -c \'echo x > "$HOME/.ssh/k"\'', 'posix').protectedMention, true)
+  assert.equal(analyzeShellCommand('type nul >> .env', 'win32').protectedMention, true)
+  assert.equal(analyzeShellCommand('rm -f .aws/credentials', 'posix').protectedMention, true)
+  // Ordinary commands must not be flagged.
+  assert.equal(analyzeShellCommand('echo hello', 'posix').protectedMention, false)
+  assert.equal(analyzeShellCommand('npm install', 'posix').protectedMention, false)
+  assert.equal(analyzeShellCommand('NODE_ENV=production npm run build', 'posix').protectedMention, false)
+  assert.equal(analyzeShellCommand('cat src/index.ts', 'posix').protectedMention, false)
+})

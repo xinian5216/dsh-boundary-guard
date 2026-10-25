@@ -9,6 +9,7 @@
  *
  * @module dsh-boundary-guard/tools/shell
  */
+import { mentionsProtectedLocation } from '../boundary/protected.ts'
 
 /** Risk tags the analyzer can attach to a command. */
 export type ShellRiskTag =
@@ -35,6 +36,7 @@ export type ShellRiskTag =
   | 'bulk-operation'
   | 'sandbox-escalation'
   | 'unknown-command'
+  | 'git-network-read'
 
 /** One analyzed command segment. */
 export interface ShellSegment {
@@ -57,9 +59,52 @@ export interface ShellAnalysis {
   readonly dynamic: boolean
   /** The command appears to operate in bulk over many files. */
   readonly bulk: boolean
+  /**
+   * Whether the command is provably read-only: a single segment, no shell
+   * substitution constructs, and either only read-classified Git tags or a
+   * command from the explicit read-only allowlist. This is what allows
+   * `git status` style commands in inspect mode without opening the shell.
+   */
+  readonly readOnly: boolean
+  /**
+   * Whether the command's text names a protected location (`.ssh`, `.env`,
+   * credentials, ...). A heuristic backstop for indirect access, used only to
+   * deny mutating commands; read-only commands are handled by the read rules.
+   */
+  readonly protectedMention: boolean
   /** Sanitized one-line summary safe for audit logs (never the raw command). */
   readonly summary: string
 }
+
+/**
+ * Commands that are read-only when they appear alone, without redirection,
+ * pipeline, or substitution. Everything else stays unclassified and is
+ * treated as a potential execution.
+ */
+const READ_ONLY_COMMANDS = new Set([
+  'ls',
+  'dir',
+  'pwd',
+  'cat',
+  'type',
+  'echo',
+  'get-childitem',
+  'gci',
+  'get-content',
+  'gc',
+  'get-location',
+  'where',
+  'which',
+  'whoami',
+  'hostname',
+  'date',
+  'git',
+  'findstr',
+  'select-string',
+])
+
+/** Shell substitution constructs that make a command opaque. */
+const SUBSTITUTION_PATTERN = /\$\(|`|\$\{|<\(|>\(|\$\(|\beval\b|\biex\b|\binvoke-expression\b/i
 
 const WRITE_CMDLETS = new Set([
   'set-content',
@@ -226,8 +271,11 @@ const GIT_READ_SUBCOMMANDS = new Set([
   'status', 'diff', 'log', 'show', 'blame', 'shortlog', 'describe', 'rev-parse',
   'ls-files', 'ls-tree', 'branch', 'tag', 'remote', 'config', 'whatchanged',
   'reflog', 'grep', 'diff-tree', 'merge-base', 'name-rev', 'symbolic-ref',
-  'check-ignore', 'var', 'version', 'help', 'fetch',
+  'check-ignore', 'var', 'version', 'help',
 ])
+// `git fetch` talks to the network and writes refs/objects into .git, so it is
+// deliberately NOT a read-classified subcommand: it stays an execution.
+const GIT_NETWORK_SUBCOMMANDS = new Set(['fetch', 'ls-remote', 'remote show'])
 const GIT_WORKSPACE_SUBCOMMANDS = new Set(['add', 'mv', 'checkout', 'switch', 'restore', 'init', 'clone', 'stash', 'commit'])
 const GIT_STATE_SUBCOMMANDS = new Set(['reset', 'rebase', 'clean', 'update-ref', 'notes', 'gc', 'prune', 'replace', 'merge', 'pull', 'cherry-pick', 'revert', 'filter-branch', 'filter-repo'])
 const GIT_REMOTE_SUBCOMMANDS = new Set(['push', 'submodule'])
@@ -239,6 +287,7 @@ function gitTags(words: readonly string[]): ShellRiskTag[] {
   const joined = flags.join(' ')
   const tags: ShellRiskTag[] = []
   if (GIT_READ_SUBCOMMANDS.has(sub)) tags.push('git-read')
+  if (GIT_NETWORK_SUBCOMMANDS.has(sub)) tags.push('git-network-read')
   if (GIT_WORKSPACE_SUBCOMMANDS.has(sub)) tags.push('git-workspace-write')
   if (GIT_STATE_SUBCOMMANDS.has(sub)) {
     tags.push('git-state-change')
@@ -434,6 +483,7 @@ export function analyzeShellCommand(command: string, platform: 'win32' | 'posix'
   const tags = new Set<ShellRiskTag>()
   const writeTargets = new Set<string>()
   const readTargets = new Set<string>()
+  const segmentWrites: string[][] = []
   let dynamic = false
   let bulk = false
   for (const segment of segments) {
@@ -444,6 +494,7 @@ export function analyzeShellCommand(command: string, platform: 'win32' | 'posix'
     }
     for (const target of segment.redirectTargets) writeTargets.add(target)
     const positional = positionalTargets(segment)
+    segmentWrites.push(positional.writes)
     for (const target of positional.writes) writeTargets.add(target)
     for (const target of positional.reads) readTargets.add(target)
     for (const word of segment.words) {
@@ -471,6 +522,26 @@ export function analyzeShellCommand(command: string, platform: 'win32' | 'posix'
     tags.add('bulk-operation')
     bulk = true
   }
+
+  // ---- Provably read-only determination ----------------------------------
+  // Only a single segment without substitution constructs or write targets can
+  // be proven read-only, and only when its classification says so: either the
+  // segment carries exactly the read-classified Git tag, or its command is on
+  // the explicit read-only allowlist with no other tags. Anything with a
+  // pipeline, redirection, loop, or substitution stays an execution.
+  const readOnly = (() => {
+    if (segments.length !== 1) return false
+    if (SUBSTITUTION_PATTERN.test(command)) return false
+    const segment = segments[0]
+    if (segment === undefined) return false
+    if (segment.redirectTargets.length > 0) return false
+    if (segment.tags.length === 1 && segment.tags[0] === 'git-read') return true
+    if (segment.tags.length === 0 && READ_ONLY_COMMANDS.has(segment.command)) {
+      return (segmentWrites[0] ?? []).length === 0
+    }
+    return false
+  })()
+
   const summary = (() => {
     const all = [...tags]
     return all.length > 0
@@ -484,6 +555,8 @@ export function analyzeShellCommand(command: string, platform: 'win32' | 'posix'
     readTargets: [...readTargets],
     dynamic,
     bulk,
+    readOnly,
+    protectedMention: mentionsProtectedLocation(command),
     summary,
   }
 }

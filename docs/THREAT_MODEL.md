@@ -40,9 +40,30 @@ to trust the guard, and for contributors changing it.
 
 ### B. The model tries to overwrite credentials or other AI clients' config
 
-* Denied in every mode, including maintain. This is the permanent floor and is
-  also enforced by the synchronous guard, so a plugin that prepends an `allow`
-  cannot lift it.
+* Denied in every mode, including maintain, through two layers: the resolved
+  write target (a path the analyzer proved the operation touches) and a
+  text-mention heuristic that denies any *mutating* command whose text names a
+  protected location (`.ssh`, `.aws`, `.env`, `credentials`, the DSH home, …),
+  even when its write target could not be resolved.
+* Both layers are enforced by the synchronous guard as well, so a plugin that
+  prepends an `allow` cannot lift them.
+* Known limit: an approved **opaque** script (encoded payload, obfuscated
+  variable construction, a binary the analyzer cannot read) that references a
+  protected location without naming it in text is not caught by the heuristic.
+  In develop mode the OS sandbox still confines the effect; in maintain mode the
+  approval prompt is the boundary. Treat protected locations as protected
+  against *analyzed* operations, not against arbitrary approved code.
+
+### B2. Inspect mode and unclassified tools
+
+* Inspect mode denies tools the classifier cannot identify outright — including
+  when a human approval is offered — because an unclassified tool may have
+  arbitrary side effects that the read-only boundary must never admit.
+* Provably read-only shell commands (single segment, no substitution, no write
+  target, and either only read-classified Git tags or a command on the explicit
+  read-only allowlist) are treated as reads, so `git status`, `git log`,
+  `git diff`, `ls`, `cat`, and `echo` work in inspect mode. `git fetch` is
+  deliberately not read-only: it writes refs and objects into the repository.
 
 ### C. The model tries to raise its own privileges
 
@@ -54,6 +75,9 @@ to trust the guard, and for contributors changing it.
   process restart, and fall back to `develop` on expiry.
 * Subagent children inherit the parent's mode verbatim; an unknown parent
   fails closed to `inspect`.
+* The OS sandbox is synchronized with the guard mode from the first touch of a
+  session (not only on mode changes), and a synchronization failure is recorded,
+  reported by `/guard status`, and retried — it is never treated as success.
 
 ### D. The model rewrites a denied command to evade analysis
 
@@ -127,6 +151,10 @@ to trust the guard, and for contributors changing it.
 8. **Behavior on untested DSH versions.** The plugin declares
    `engines.dsh: ">=0.2.1-rc.3 <0.3.0"` and is verified against `0.2.1-rc.3`.
    Other versions may behave differently.
+9. **Protected locations against arbitrary approved code.** The two layers in B
+   cover analyzed operations. An approved opaque script that reaches a protected
+   location without naming it in text is a documented residual risk; in maintain
+   mode the approval prompt is the only boundary.
 
 ## Security-relevant configuration defaults
 

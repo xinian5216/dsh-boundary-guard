@@ -119,6 +119,18 @@ function evaluate(input: PolicyInput, protectedRoots: readonly ProtectedRoot[], 
     }
   }
 
+  // 1a-bis. A mutating command whose TEXT names a protected location is denied
+  //     even when its write target could not be resolved. This is the
+  //     heuristic backstop for indirect access (variables, nested shells,
+  //     encoded payloads) and applies in every mode, including maintain.
+  if (mutating && tags.has('protected-mention') && !PRIVILEGED_FIR_PARTY_TOOLS.has(operation.toolName)) {
+    return deny(
+      'protected-path-write',
+      `Boundary guard: ${operation.toolName} references a protected location (credentials, other AI client configuration, or the DSH home) in a mutating command, so it is denied even though its write target could not be resolved. Run it outside the agent if it is genuinely required.`,
+      'critical',
+    )
+  }
+
   // 1b. Inspect mode is strictly read-only.
   if (mode === 'inspect' && mutating) {
     const reason = operation.operation === 'execute'
@@ -152,6 +164,16 @@ function evaluate(input: PolicyInput, protectedRoots: readonly ProtectedRoot[], 
 
   // 2a. Unknown tools.
   if (operation.toolFamily === 'unknown' || operation.operation === 'unknown') {
+    // Inspect mode cannot approve what it cannot classify: an unclassified
+    // tool may have arbitrary side effects, which the read-only boundary must
+    // never admit — not even with a human approval.
+    if (mode === 'inspect') {
+      return deny(
+        'unknown-tool',
+        `Boundary guard: inspect mode cannot run the unclassified tool "${operation.toolName}". Switch with /guard develop to use it.`,
+        'high',
+      )
+    }
     if (input.unknownToolPolicy === 'deny') {
       return deny('unknown-tool', `Boundary guard: tool "${operation.toolName}" is not recognized and unknownToolPolicy is "deny".`, 'high')
     }
