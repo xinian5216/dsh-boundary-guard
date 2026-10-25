@@ -1,0 +1,29 @@
+# Dependencies
+node_modules/
+
+# Build output
+lib/
+
+# Local verification environments
+.dsh-verify/
+.dsh-test-home/
+verify-home/
+
+# Audit and snapshot data created by local runs
+boundary-guard-audit/
+boundary-guard-snapshots/
+
+# Logs and OS noise
+*.log
+npm-debug.log*
+pnpm-debug.log*
+.DS_Store
+Thumbs.db
+
+# Editor and tooling
+.vscode/
+.idea/
+*.tsbuildinfo
+
+# Packed artifacts (built on demand for releases)
+*.tgz

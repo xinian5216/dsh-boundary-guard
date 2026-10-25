@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Boundary Guard",
+    "description": "Mode-based operation boundary for DeepSeek Harness: inspect, develop, and maintain modes with approval-gated high-risk operations, protected paths, and a sanitized audit trail."
+  }
+}

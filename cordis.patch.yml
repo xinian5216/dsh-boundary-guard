@@ -1,0 +1,27 @@
+# DSH Boundary Guard bundle patch.
+#
+# Installs the boundary-guard plugin into a profile. The plugin registers its
+# own policy listeners, the /guard command family, and the audit trail; all
+# configuration lives in the `config` block below.
+- insert:
+    - id: boundary-guard
+      name: 'dsh-boundary-guard'
+      config:
+        # Mode a fresh session starts in: inspect | develop | maintain.
+        defaultMode: develop
+        # Decision for tools the guard cannot classify: ask | deny.
+        unknownToolPolicy: ask
+        # Extra absolute directories writable in develop mode.
+        additionalWritableRoots: []
+        audit:
+          enabled: true
+          maxFileBytes: 8388608
+          retainDays: 90
+        snapshot:
+          enabled: false
+          maxSnapshots: 20
+          maxFileBytes: 4194304
+        maintain:
+          # Maximum maintain grant lifetime (30 minutes).
+          maxDurationMs: 1800000
+          requireConfirmation: true

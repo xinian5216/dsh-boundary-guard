@@ -1,0 +1,17 @@
+# Example profile patch: daily development defaults.
+- insert:
+    - id: boundary-guard
+      name: 'dsh-boundary-guard'
+      config:
+        defaultMode: develop
+        unknownToolPolicy: ask
+        additionalWritableRoots: []
+        audit:
+          enabled: true
+          maxFileBytes: 8388608
+          retainDays: 90
+        snapshot:
+          enabled: false
+        maintain:
+          maxDurationMs: 1800000
+          requireConfirmation: true

@@ -1,0 +1,20 @@
+# Example: a CI/unattended profile with the boundary guard.
+#
+# A strict stance for automation: inspect mode by default, unknown tools denied,
+# no snapshots, and a short audit retention. Never enable maintain mode in an
+# unattended profile.
+- insert:
+    - id: boundary-guard
+      name: 'dsh-boundary-guard'
+      config:
+        defaultMode: inspect
+        unknownToolPolicy: deny
+        audit:
+          enabled: true
+          maxFileBytes: 4194304
+          retainDays: 14
+        snapshot:
+          enabled: false
+        maintain:
+          maxDurationMs: 300000
+          requireConfirmation: true

@@ -1,0 +1,18 @@
+# Example profile patch: enable the boundary guard with a read-only default.
+#
+# Apply with:  dsh --profile <name> --patch ./guard-inspect.yml "task"
+# or merge the entries into $DSH_HOME/profiles/<name>/cordis.patch.yml.
+- insert:
+    - id: boundary-guard
+      name: 'dsh-boundary-guard'
+      config:
+        defaultMode: inspect
+        unknownToolPolicy: deny
+        audit:
+          enabled: true
+          retainDays: 30
+        snapshot:
+          enabled: true
+        maintain:
+          maxDurationMs: 600000
+          requireConfirmation: true
