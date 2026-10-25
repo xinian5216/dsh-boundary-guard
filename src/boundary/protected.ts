@@ -242,6 +242,45 @@ export function isHighValueConfig(absolutePath: string): boolean {
   return false
 }
 
+/**
+ * Spellings of protected locations used to detect INDIRECT access: a command
+ * whose text names a protected location but whose write target the analyzer
+ * could not resolve (variables, nested shells, encoded payloads).
+ */
+const PROTECTED_MENTION_PATTERNS: readonly RegExp[] = [
+  /(^|[\\/='"$\s])\.ssh([\\/='"$\s]|$)/i,
+  /(^|[\\/='"$\s])\.aws([\\/='"$\s]|$)/i,
+  /(^|[\\/='"$\s])\.azure([\\/='"$\s]|$)/i,
+  /(^|[\\/='"$\s])\.kube([\\/='"$\s]|$)/i,
+  /(^|[\\/='"$\s])\.docker([\\/='"$\s]|$)/i,
+  /(^|[\\/='"$\s])\.gnupg([\\/='"$\s]|$)/i,
+  /(^|[\\/='"$\s])\.netrc([\\/='"$\s]|$)/i,
+  /(^|[\\/='"$\s])\.npmrc([\\/='"$\s]|$)/i,
+  /(^|[\\/='"$\s])\.pypirc([\\/='"$\s]|$)/i,
+  /(^|[\\/='"$\s])\.git-credentials([\\/='"$\s]|$)/i,
+  /(^|[\\/='"$\s])\.codex([\\/='"$\s]|$)/i,
+  /(^|[\\/='"$\s])\.claude([\\/='"$\s]|$)/i,
+  /(^|[\\/='"$\s])\.cursor([\\/='"$\s]|$)/i,
+  /(^|[\\/='"$\s])\.opencode([\\/='"$\s]|$)/i,
+  /(^|[\\/='"$\s])\.aider([\\/='"$\s]|$)/i,
+  /(^|[\\/='"$\s])\.dsh([\\/='"$\s]|$)/i,
+  /(^|[\\/='"$\s])\.agents([\\/='"$\s]|$)/i,
+  /(^|[\\/='"$\s])\.env(\.[^\s\\/]*)?([\\/='"$\s]|$)/i,
+  /(^|[\\/='"$\s])id_(rsa|dsa|ecdsa|ed25519)([\\/='"$\s]|$)/i,
+  /(^|[\\/='"$\s])credentials(\.json|\.db|\.ya?ml)?([\\/='"$\s]|$)/i,
+  /(^|[\\/='"$\s])access_tokens([\\/='"$\s]|$)/i,
+  /Microsoft[\\/]Credentials/i,
+]
+
+/**
+ * Whether a command's text names a protected location. Used as a heuristic
+ * backstop for indirect access; it is deliberately conservative and may
+ * over-match (denying a command that merely mentions a location).
+ */
+export function mentionsProtectedLocation(text: string): boolean {
+  return PROTECTED_MENTION_PATTERNS.some((pattern) => pattern.test(text))
+}
+
 /** Environment-derived discovery input using the current process. */
 export function discoveryFromEnvironment(env: NodeJS.ProcessEnv = process.env): {
   homedir: string

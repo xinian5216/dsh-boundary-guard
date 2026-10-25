@@ -43,6 +43,16 @@ export interface SetModeOptions {
   readonly source?: 'command' | 'inherited'
 }
 
+/** The real sandbox-sync state of one session. */
+export interface SandboxSyncStatus {
+  /** The sandbox mode the current guard mode requires. */
+  readonly desired: SandboxMode
+  /** The sandbox mode last applied successfully, if any. */
+  readonly applied: SandboxMode | undefined
+  /** The last synchronization failure, if any. */
+  readonly lastError?: string
+}
+
 /**
  * Owns guard-mode state for every session in this process.
  */
@@ -51,6 +61,8 @@ export class GuardModeManager {
   private readonly states = new WeakMap<Session, GuardModeState>()
   /** Sessions whose sandbox mode already matches the effective guard mode. */
   private readonly sandboxSynced = new WeakMap<Session, string>()
+  /** Last sandbox-sync failure per session, surfaced in status. */
+  private readonly sandboxErrors = new WeakMap<Session, string>()
   /** Sessions that already received a mode record (command or inheritance). */
   private readonly recorded = new WeakSet<Session>()
   /** Live session modes by id, for subagent inheritance. */
@@ -95,6 +107,10 @@ export class GuardModeManager {
     }
     this.states.set(session, state)
     this.knownModes.set(String(session.id), state)
+    // The OS sandbox must reflect the guard mode from the first touch of a
+    // session; otherwise a session that never changes mode runs with the
+    // deployment default (usually workspace-write) even in inspect mode.
+    this.syncSandbox(session, state.mode)
     return state
   }
 
@@ -173,18 +189,48 @@ export class GuardModeManager {
    * Lower the session sandbox to match the guard mode. Idempotent per
    * session+mode; never fights an explicit user change through the permission
    * selector (that only widens what an approved operation may execute).
+   *
+   * The synchronized marker is written only after `setSandboxMode` succeeds, so
+   * a failure is never reported as applied and is retried on the next call.
    */
   private syncSandbox(session: Session, mode: GuardMode): void {
     const target = sandboxModeFor(mode)
     const key = `${String(session.id)}:${target}`
     if (this.sandboxSynced.get(session) === key) return
-    this.sandboxSynced.set(session, key)
     try {
       setSandboxMode(session, target)
-    } catch {
-      // The sandbox policy service may be absent; the guard's own policy still
-      // applies, but OS-level confinement is weaker. Surfaced in status.
+    } catch (error) {
+      // The sandbox policy service may be absent or the append may fail. The
+      // guard's own policy still applies, but OS-level confinement is weaker;
+      // the failure is recorded and surfaced in status instead of being
+      // silently treated as success.
+      this.sandboxErrors.set(session, (error as Error).message)
+      return
     }
+    this.sandboxErrors.delete(session)
+    this.sandboxSynced.set(session, key)
+  }
+
+  /**
+   * The real sandbox-sync state of one session: what the guard mode requires,
+   * what was last applied successfully, and the last failure (if any).
+   */
+  sandboxStatusOf(session: Session): SandboxSyncStatus {
+    const state = this.stateOf(session)
+    const desired = sandboxModeFor(state.mode)
+    const applied = this.sandboxSynced.get(session)?.split(':').slice(1).join(':') as SandboxMode | undefined
+    const lastError = this.sandboxErrors.get(session)
+    return {
+      desired,
+      applied,
+      ...(lastError === undefined ? {} : { lastError }),
+    }
+  }
+
+  /** Re-attempt the sandbox sync after a failure. */
+  retrySandboxSync(session: Session): void {
+    this.sandboxSynced.delete(session)
+    this.syncSandbox(session, this.stateOf(session).mode)
   }
 
   /** Drop in-memory state for a disposed session. */
@@ -192,6 +238,7 @@ export class GuardModeManager {
     this.knownModes.delete(String(session.id))
     this.states.delete(session)
     this.sandboxSynced.delete(session)
+    this.sandboxErrors.delete(session)
     this.recorded.delete(session)
   }
 }

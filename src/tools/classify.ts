@@ -46,6 +46,7 @@ export type ClassifierTag =
   | 'dynamic-execution'
   | 'bulk-operation'
   | 'unknown-command'
+  | 'protected-mention'
 
 /** Map shell risk tags onto classifier tags. */
 function fromShellTags(tags: readonly ShellRiskTag[]): ClassifierTag[] {
@@ -53,6 +54,7 @@ function fromShellTags(tags: readonly ShellRiskTag[]): ClassifierTag[] {
   for (const tag of tags) {
     switch (tag) {
       case 'git-read': out.add('git-read'); break
+      case 'git-network-read': out.add('git-read'); break
       case 'git-workspace-write': out.add('git-workspace-write'); break
       case 'git-state-change': out.add('git-state-change'); break
       case 'git-history-rewrite': out.add('git-history-rewrite'); break
@@ -217,14 +219,25 @@ export function classifyCore(toolName: string, args: unknown, platform: Platform
     for (const tag of fromShellTags(analysis.tags)) tags.add(tag)
     if (isBackground(args)) tags.add('background')
     if (hasSandboxEscalation(args)) tags.add('sandbox-escalation')
+    // A command whose text names a protected location is flagged so the engine
+    // can deny indirect access even when the write target could not be
+    // resolved (variables, nested shells, encoded payloads).
+    if (analysis.protectedMention) tags.add('protected-mention')
     for (const target of analysis.writeTargets) writeInputs.push(target)
     for (const target of analysis.readTargets) readInputs.push(target)
-    const operation: OperationClass = analysis.tags.some((tag) => tag === 'file-delete' || tag === 'destructive')
-      ? 'delete'
-      : 'execute'
-    const risk: RiskLevel = analysis.tags.includes('mass-destructive') || analysis.tags.includes('privilege-escalation')
-      ? 'critical'
-      : analysis.tags.length > 0 ? 'high' : 'low'
+    // A provably read-only command (single segment, no substitution, no write
+    // targets, read-classified) is a read, not an execution: this is what lets
+    // `git status` work in inspect mode without opening the shell to anything.
+    const operation: OperationClass = analysis.readOnly
+      ? 'read'
+      : analysis.tags.some((tag) => tag === 'file-delete' || tag === 'destructive')
+        ? 'delete'
+        : 'execute'
+    const risk: RiskLevel = analysis.readOnly
+      ? 'none'
+      : analysis.tags.includes('mass-destructive') || analysis.tags.includes('privilege-escalation')
+        ? 'critical'
+        : analysis.tags.length > 0 ? 'high' : 'low'
     return core(toolName, 'shell', operation, risk, tags, writeInputs, readInputs, analysis.summary)
   }
 

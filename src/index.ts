@@ -40,7 +40,7 @@ export const inject: string[] = []
 export default { name, inject, Config, apply }
 
 /** Plugin version, kept in sync with package.json. */
-const PLUGIN_VERSION = '0.1.0'
+const PLUGIN_VERSION = '0.1.1'
 
 /**
  * The plugin body. Configuration is validated before anything registers: an
