@@ -69,8 +69,8 @@
     "@deepseek-ai/dsh-user-questions": "0.2.1-rc.3",
     "@deepseek-ai/dsh-working-directory": "0.2.1-rc.3",
     "@deepseek-ai/node-addon-system": "0.1.2",
-    "@types/node": "24.10.1",
-    "typescript": "5.9.3"
+    "@types/node": "26.6.5",
+    "typescript": "7.0.2"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
