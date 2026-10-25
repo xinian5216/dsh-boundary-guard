@@ -106,6 +106,9 @@ export function policyInput(overrides: Partial<PolicyInput> = {}): PolicyInput {
     operation: operation(),
     additionalWritableRoots: [],
     unknownToolPolicy: 'ask',
+    // A confirmed sandbox is the healthy default; the fail-closed rule is
+    // exercised by passing `sandboxConfirmed: false` explicitly.
+    sandboxConfirmed: true,
     ...overrides,
   }
 }

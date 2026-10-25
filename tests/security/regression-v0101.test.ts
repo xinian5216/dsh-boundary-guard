@@ -1,6 +1,6 @@
 import { test, after } from 'node:test'
 import assert from 'node:assert/strict'
-import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { defineTool } from '@deepseek-ai/dsh-tools'
@@ -80,17 +80,35 @@ test('BUG-3: read-only git commands are allowed in inspect mode', async (t) => {
 
 // 4. Maintain mode must not let an approved opaque script touch protected paths.
 test('BUG-4: approved opaque scripts cannot indirectly write protected paths', async (t) => {
-  const guard = await env({
-    config: { defaultMode: 'maintain', maintain: { maxDurationMs: 600000, requireConfirmation: false } },
-  })
-  if (guard.shellTool === undefined) {
-    t.skip('no confined shell tool composed on this platform')
-    return
+  // The test never touches the real user profile. An isolated fake home is
+  // created and exported through every variable the plugin (which derives its
+  // protected roots from `os.homedir()` at load time) and the confined shell
+  // child (which inherits the parent environment) read, so a regression fails
+  // against a throwaway directory instead of a real one.
+  const fakeHome = mkdtempSync(join(tmpdir(), 'boundary-guard-home-'))
+  const previous = {
+    HOME: process.env.HOME,
+    USERPROFILE: process.env.USERPROFILE,
+    DSH_HOME: process.env.DSH_HOME,
+    DSH_AGENTS_HOME: process.env.DSH_AGENTS_HOME,
   }
-  await guard.command('/guard maintain 10')
-  const home = process.env.USERPROFILE ?? process.env.HOME ?? ''
-  const protectedTarget = join(home, '.ssh', 'boundary-guard-indirect-test.txt')
   try {
+    process.env.HOME = fakeHome
+    process.env.USERPROFILE = fakeHome
+    // The plugin also reads the DSH homes from the environment; pointing them
+    // inside the fake home keeps the whole composition hermetic even though
+    // `scrubbedParentEnv()` strips `DSH_*` names for child processes.
+    process.env.DSH_HOME = join(fakeHome, '.dsh')
+    process.env.DSH_AGENTS_HOME = join(fakeHome, '.agents')
+    const guard = await env({
+      config: { defaultMode: 'maintain', maintain: { maxDurationMs: 600000, requireConfirmation: false } },
+    })
+    if (guard.shellTool === undefined) {
+      t.skip('no confined shell tool composed on this platform')
+      return
+    }
+    await guard.command('/guard maintain 10')
+    const protectedTarget = join(fakeHome, '.ssh', 'boundary-guard-indirect-test.txt')
     guard.answerWith(['allowed-once'])
     // An opaque nested invocation whose write target is built at runtime.
     const result = await guard.call(guard.shellTool, {
@@ -101,8 +119,13 @@ test('BUG-4: approved opaque scripts cannot indirectly write protected paths', a
     })
     assert.equal(result.isError, true, 'an approved script must not write protected paths indirectly')
     assert.equal(existsSync(protectedTarget), false, 'the protected file must not exist')
+    assert.equal(existsSync(join(fakeHome, '.ssh')), false, 'the protected directory must never be created')
   } finally {
-    rmSync(protectedTarget, { force: true })
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
+    rmSync(fakeHome, { recursive: true, force: true })
   }
 })
 

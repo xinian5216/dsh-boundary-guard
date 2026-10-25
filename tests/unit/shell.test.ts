@@ -143,6 +143,237 @@ test('redirection, pipelines, and substitution are never read-only', () => {
   assert.equal(analyzeShellCommand('git status && git push', 'win32').readOnly, false)
 })
 
+// ===========================================================================
+// v0.1.2: the Git read-only boundary must come from an explicit allowlist
+// ===========================================================================
+
+test('provably read-only git invocations stay read-only', () => {
+  for (const command of [
+    'git status',
+    'git log --oneline',
+    'git diff --stat',
+    'git show --stat HEAD',
+    'git branch -a',
+    'git config --list',
+    'git config user.name',
+    'git reflog',
+    'git stash list',
+    'git notes list',
+    'git worktree list',
+    'git remote -v',
+    'git -C . status',
+    'git --git-dir=/tmp/repo/.git status',
+  ]) {
+    const analysis = analyzeShellCommand(command, 'posix')
+    assert.equal(analysis.readOnly, true, `${command} should be read-only`)
+    assert.deepEqual(analysis.tags, ['git-read'], `${command} should carry only the read tag`)
+  }
+})
+
+test('git global options cannot hide a mutating subcommand', () => {
+  const cases: [string, string][] = [
+    ['git -C /tmp push origin main', 'git-remote-write'],
+    ['git -C /tmp commit -m x', 'git-workspace-write'],
+    ['git --git-dir=/tmp/.git push', 'git-remote-write'],
+    ['git --git-dir /tmp/.git push', 'git-remote-write'],
+    ['git --work-tree=/tmp push', 'git-remote-write'],
+  ]
+  for (const [command, tag] of cases) {
+    const analysis = analyzeShellCommand(command, 'posix')
+    assert.equal(analysis.readOnly, false, `${command} must not be read-only`)
+    assert.ok(analysis.tags.includes(tag as never), `${command} should be tagged ${tag}`)
+  }
+})
+
+test('behavior-changing git global options are dynamic execution', () => {
+  for (const command of [
+    'git -c core.pager=cat status',
+    'git -c alias.x=!id x',
+    'git --config user.name=x status',
+    'git --exec-path=/tmp status',
+    'git --exec-path status',
+    'git --namespace=ns status',
+    'git --super-prefix=sub/ status',
+  ]) {
+    const analysis = analyzeShellCommand(command, 'posix')
+    assert.equal(analysis.readOnly, false, `${command} must not be read-only`)
+    assert.ok(analysis.tags.includes('dynamic-execution'), `${command} should be dynamic execution`)
+  }
+})
+
+test('git config writes are never read-only', () => {
+  const writes = [
+    'git config user.email attacker@example.invalid',
+    'git config --add section.key value',
+    'git config --unset user.name',
+    'git config --unset-all user.name',
+    'git config --replace-all user.name x',
+    'git config --rename-section a b',
+    'git config --remove-section user',
+    'git config --edit',
+    'git config -e',
+  ]
+  for (const command of writes) {
+    const analysis = analyzeShellCommand(command, 'posix')
+    assert.equal(analysis.readOnly, false, `${command} must not be read-only`)
+    assert.ok(analysis.tags.includes('git-workspace-write'), `${command} should be a workspace write`)
+  }
+  for (const command of [
+    'git config --list',
+    'git config -l',
+    'git config --get user.name',
+    'git config --get-all user.name',
+    'git config --get-regexp ^user',
+    'git config --name-only --list',
+    'git config user.name',
+  ]) {
+    assert.equal(analyzeShellCommand(command, 'posix').readOnly, true, `${command} should be read-only`)
+  }
+})
+
+test('git branch and tag creation are workspace writes, not reads', () => {
+  for (const command of ['git branch feature', 'git tag v1', 'git tag -a v1 -m x']) {
+    const analysis = analyzeShellCommand(command, 'posix')
+    assert.equal(analysis.readOnly, false, `${command} must not be read-only`)
+    assert.ok(analysis.tags.includes('git-workspace-write'), `${command} should be a workspace write`)
+  }
+  // An annotated tag without a message opens an editor: an unanalyzable program.
+  assert.ok(analyzeShellCommand('git tag -a v1', 'posix').tags.includes('dynamic-execution'))
+  // Deleting refs changes repository state.
+  assert.ok(analyzeShellCommand('git branch -d feature', 'posix').tags.includes('git-state-change'))
+  assert.ok(analyzeShellCommand('git tag -d v1', 'posix').tags.includes('git-state-change'))
+  // A branch description edit and upstream changes are writes too.
+  for (const command of ['git branch --edit-description', 'git branch --set-upstream-to=origin/main', 'git branch -m old new']) {
+    assert.equal(analyzeShellCommand(command, 'posix').readOnly, false, `${command} must not be read-only`)
+  }
+})
+
+test('git diff and show cannot write files or run external diff drivers', () => {
+  for (const command of [
+    'git diff --output=/tmp/leak.txt',
+    'git show --output=/tmp/leak.txt',
+    'git diff --output /tmp/leak.txt',
+    'git format-patch --output=/tmp/leak.txt HEAD',
+  ]) {
+    const analysis = analyzeShellCommand(command, 'posix')
+    assert.equal(analysis.readOnly, false, `${command} must not be read-only`)
+    assert.ok(
+      analysis.writeTargets.some((target) => target.includes('leak.txt')),
+      `${command} must collect the output file as a write target`,
+    )
+  }
+  for (const command of ['git diff --ext-diff', 'git show --textconv', 'git diff --ext-diff HEAD']) {
+    const analysis = analyzeShellCommand(command, 'posix')
+    assert.equal(analysis.readOnly, false, `${command} must not be read-only`)
+    assert.ok(analysis.tags.includes('dynamic-execution'), `${command} should be dynamic execution`)
+  }
+})
+
+test('git reflog expiry and symbolic-ref moves change repository state', () => {
+  assert.equal(analyzeShellCommand('git reflog', 'posix').readOnly, true)
+  assert.equal(analyzeShellCommand('git reflog show', 'posix').readOnly, true)
+  for (const command of ['git reflog expire --all', 'git reflog expire --expire=now --all', 'git reflog delete HEAD@{1}']) {
+    const analysis = analyzeShellCommand(command, 'posix')
+    assert.equal(analysis.readOnly, false, `${command} must not be read-only`)
+    assert.ok(analysis.tags.includes('git-state-change'), `${command} should change git state`)
+  }
+  assert.equal(analyzeShellCommand('git symbolic-ref HEAD', 'posix').readOnly, true)
+  const moved = analyzeShellCommand('git symbolic-ref HEAD refs/heads/evil', 'posix')
+  assert.equal(moved.readOnly, false)
+  assert.ok(moved.tags.includes('git-state-change'))
+  // Deleting the symbolic ref is a write even with a single positional.
+  assert.equal(analyzeShellCommand('git symbolic-ref -d HEAD', 'posix').readOnly, false)
+})
+
+test('git worktree, stash, notes, and remote subcommands are classified', () => {
+  const cases: [string, string][] = [
+    ['git worktree add /tmp/wt', 'git-workspace-write'],
+    ['git worktree move /tmp/wt /tmp/wt2', 'git-workspace-write'],
+    ['git worktree remove /tmp/wt', 'git-state-change'],
+    ['git worktree prune', 'git-state-change'],
+    ['git stash push', 'git-workspace-write'],
+    ['git stash drop', 'git-state-change'],
+    ['git stash clear', 'git-state-change'],
+    ['git notes add -m x', 'git-state-change'],
+    ['git notes remove', 'git-state-change'],
+    ['git remote add origin /tmp/x', 'git-remote-write'],
+    ['git remote set-url origin /tmp/y', 'git-remote-write'],
+    ['git remote rename origin upstream', 'git-remote-write'],
+  ]
+  for (const [command, tag] of cases) {
+    const analysis = analyzeShellCommand(command, 'posix')
+    assert.equal(analysis.readOnly, false, `${command} must not be read-only`)
+    assert.ok(analysis.tags.includes(tag as never), `${command} should be tagged ${tag}`)
+  }
+  // `remote show` contacts the network, so it is never provably read-only.
+  const show = analyzeShellCommand('git remote show origin', 'posix')
+  assert.equal(show.readOnly, false)
+  assert.ok(show.tags.includes('git-network-read'))
+  assert.equal(analyzeShellCommand('git remote get-url origin', 'posix').readOnly, true)
+})
+
+test('unrecognized git subcommands are never silently read-only', () => {
+  for (const command of ['git', 'git help', 'git fsck', 'git bisect start', 'git archive --output=/tmp/a.tar HEAD']) {
+    const analysis = analyzeShellCommand(command, 'posix')
+    assert.equal(analysis.readOnly, false, `${command} must not be read-only`)
+    assert.ok(analysis.tags.includes('unknown-command'), `${command} should be an unknown command`)
+  }
+})
+
+test('git global path options are collected as path inputs', () => {
+  const read = analyzeShellCommand('git -C /tmp status', 'posix')
+  assert.ok(read.readTargets.includes('/tmp'), 'a read subcommand reads the -C directory')
+  assert.equal(read.readTargets.includes('/tmp') && read.writeTargets.includes('/tmp'), false)
+  const write = analyzeShellCommand('git -C /tmp push origin main', 'posix')
+  assert.ok(write.writeTargets.includes('/tmp'), 'a mutating subcommand writes the -C directory')
+  const protectedRead = analyzeShellCommand('git -C ~/.ssh status', 'posix')
+  assert.ok(protectedRead.readTargets.includes('~/.ssh'), 'a protected -C directory must be visible as a read')
+  assert.equal(protectedRead.protectedMention, true)
+})
+
+test('existing git classifications are preserved', () => {
+  assert.ok(analyzeShellCommand('git push origin main').tags.includes('git-remote-write'))
+  assert.ok(analyzeShellCommand('git push --force origin main').tags.includes('git-history-rewrite'))
+  assert.ok(analyzeShellCommand('git commit --amend').tags.includes('git-history-rewrite'))
+  assert.ok(analyzeShellCommand('git reset --hard HEAD~3').tags.includes('git-history-rewrite'))
+  assert.ok(analyzeShellCommand('git pull --rebase').tags.includes('git-state-change'))
+  assert.ok(analyzeShellCommand('git fetch origin').tags.includes('git-network-read'))
+  assert.ok(analyzeShellCommand('git clone https://example.invalid/x.git').tags.includes('git-workspace-write'))
+  assert.ok(analyzeShellCommand('git clean -fd').tags.includes('destructive'))
+  assert.ok(analyzeShellCommand('git submodule update').tags.includes('git-state-change'))
+  assert.ok(analyzeShellCommand('git filter-branch --tree-filter x HEAD').tags.includes('git-history-rewrite'))
+  assert.ok(analyzeShellCommand('git update-ref refs/heads/x HEAD').tags.includes('git-state-change'))
+})
+
+// ===========================================================================
+// v0.1.2: `date` is only read-only in a spelling that cannot change the clock
+// ===========================================================================
+
+test('a flagless date is read-only but a clock change is not', () => {
+  for (const command of ['date', 'date -u', 'date --utc', 'date --universal']) {
+    assert.equal(analyzeShellCommand(command, 'posix').readOnly, true, `${command} should be read-only`)
+  }
+  for (const command of ['date -s 2026-01-01', 'date --set=2026-01-01', 'date -s', 'date +%s', 'date --iso-8601', 'date -d tomorrow']) {
+    const analysis = analyzeShellCommand(command, 'posix')
+    assert.equal(analysis.readOnly, false, `${command} must not be read-only`)
+  }
+})
+
+// ===========================================================================
+// v0.1.2: nested opaque shells are detected on both platforms
+// ===========================================================================
+
+test('nested opaque shells are dynamic execution on Windows too', () => {
+  for (const command of ['cmd /c "echo x > out.txt"', 'cmd /k "dir"', 'cmd /r "dir"', 'cmd /c "git push"']) {
+    const analysis = analyzeShellCommand(command, 'win32')
+    assert.equal(analysis.readOnly, false, `${command} must not be read-only`)
+    assert.ok(analysis.tags.includes('dynamic-execution'), `${command} should be dynamic execution`)
+  }
+  for (const command of ['sh -c "echo x"', 'bash -c "echo x"']) {
+    assert.ok(analyzeShellCommand(command, 'posix').tags.includes('dynamic-execution'), command)
+  }
+})
+
 test('protected location mentions are detected', () => {
   assert.equal(analyzeShellCommand('echo x > ~/.ssh/authorized_keys', 'posix').protectedMention, true)
   assert.equal(analyzeShellCommand('cmd /c "echo x > %USERPROFILE%\\.ssh\\k"', 'win32').protectedMention, true)

@@ -2,3 +2,13 @@ allowBuilds:
   '@deepseek-ai/dsh-subprocess-local': false
   koffi: false
   node-pty: false
+
+# Dependency-security overrides. `zod` 4.4.3 is pinned exactly by several DSH
+# packages and is affected by GHSA-mrhx-c7xc-m3w5 (memory exhaustion while
+# validating oversized constrained collections, fixed in 4.6.6); `undici` 8.11.2
+# arrives transitively through `@deepseek-ai/dsh-http-proxy` and is affected by
+# GHSA-4qv8-2p9j-2685, GHSA-f72v-6w45-q472 and GHSA-xjj6-f33q-929c (all fixed in
+# 8.12.2). Both are 4.x/8.x in-range bumps; the full test suite runs against them.
+overrides:
+  zod@>=4.4.3: 4.6.7
+  undici@>=8.0.0: 8.12.3

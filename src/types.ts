@@ -50,6 +50,7 @@ export type ReasonCode =
   | 'plugin-self-write'
   | 'inspect-mode-write'
   | 'inspect-mode-execute'
+  | 'sandbox-unavailable'
   | 'internal-error'
   // Explicit denials.
   | 'outside-workspace-write'
@@ -153,6 +154,13 @@ export interface PolicyInput {
   readonly additionalWritableRoots: readonly string[]
   /** Configured policy for tools the classifier does not know. */
   readonly unknownToolPolicy: 'ask' | 'deny'
+  /**
+   * Whether the OS sandbox was confirmed for this session. The guard lowers
+   * the session sandbox to match the mode; when that write (or its read-back)
+   * cannot be confirmed, every operation that depends on the sandbox is denied
+   * instead of running with weaker confinement than the mode promises.
+   */
+  readonly sandboxConfirmed: boolean
 }
 
 /** The engine's decision with its auditable explanation. */

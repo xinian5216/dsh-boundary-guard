@@ -25,6 +25,7 @@ end to end; treat other versions as untested.
 | `ctx.commands.register()` | `@deepseek-ai/dsh-commands` | The `/guard` command family |
 | `ctx.userQuestions.ask()` | `@deepseek-ai/dsh-user-questions` | Maintain-mode and rollback confirmation |
 | `setSandboxMode()` | `@deepseek-ai/dsh-sandbox-policy` | Per-session sandbox mode for each guard mode |
+| `ctx.sandboxPolicy.overrideOf()` | `@deepseek-ai/dsh-sandbox-policy` | Read-back that confirms a sandbox-mode write actually landed |
 | `ctx.sessionProjections` | `@deepseek-ai/dsh-session-projection` | Durable mode state fold |
 | `appendPluginRecord()` | `@deepseek-ai/dsh-session` | Durable mode-change records |
 | `ctx.workingDirectory.get()` | `@deepseek-ai/dsh-working-directory` | Effective working directory for relative paths |
@@ -83,8 +84,11 @@ registry, and then execute real tool calls.
 - It does not require any other AI tool to expose credentials.
 - The `/permission` command and the plugin both write the session's sandbox
   mode. The guard re-asserts its own mode mapping on its own transitions
-  (mode switches and maintain expiry); it does not fight an explicit user
-  change made through the permission selector between transitions.
+  (mode switches and maintain expiry) and after a failed confirmation; it does
+  not fight an explicit user change made through the permission selector between
+  transitions. A user change that leaves the sandbox wider than the guard mode
+  requires is reported by `/guard status` (as a divergence from the read-back)
+  rather than silently overwritten.
 
 ## Upgrade notes
 
@@ -93,3 +97,5 @@ registry, and then execute real tool calls.
   incompatible shape are ignored (the fold falls back to the configured
   default), never guessed at.
 - No migration is required from earlier versions; 0.1.0 is the first release.
+- 0.1.2 adds no new persisted state: the sandbox-confirmation bookkeeping is
+  in-memory per process, and the mode record format is unchanged.

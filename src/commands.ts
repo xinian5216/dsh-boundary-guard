@@ -171,15 +171,23 @@ function renderStatus(session: Agent['session'], deps: GuardCommandContext): str
     lines.push(`Maintain grant expires: ${new Date(state.maintainExpiresAt).toLocaleString()}`)
   }
   // Report the real sandbox state: what the mode requires, what was actually
-  // applied, and any synchronization failure.
+  // applied, whether that write was read back, what the policy reports now,
+  // and any synchronization failure.
   const sandbox = deps.modes.sandboxStatusOf(session)
+  const details: string[] = []
   if (sandbox.applied === undefined) {
-    lines.push(`Sandbox file policy: ${sandbox.desired} (not confirmed applied${sandbox.lastError === undefined ? '' : `: ${sandbox.lastError}`})`)
+    details.push('not confirmed applied')
   } else if (sandbox.applied !== sandbox.desired) {
-    lines.push(`Sandbox file policy: ${sandbox.desired} (last applied: ${sandbox.applied})`)
-  } else {
-    lines.push(`Sandbox file policy: ${sandbox.desired}`)
+    details.push(`last applied: ${sandbox.applied}`)
   }
+  if (sandbox.applied !== undefined && !sandbox.verified) {
+    details.push('written but not read back')
+  }
+  if (sandbox.observed !== undefined && sandbox.observed !== (sandbox.applied ?? sandbox.desired)) {
+    details.push(`sandbox policy reports ${sandbox.observed}`)
+  }
+  if (sandbox.lastError !== undefined) details.push(sandbox.lastError)
+  lines.push(`Sandbox file policy: ${sandbox.desired} (${details.length === 0 ? 'applied and verified' : details.join('; ')})`)
   lines.push(`Workspace: ${session.header.cwd ?? '(none recorded)'}`)
   lines.push(`Audit: ${deps.audit?.available === true ? 'enabled' : 'unavailable'}`)
   lines.push(`Snapshots: ${deps.snapshots === undefined ? 'disabled' : 'enabled'}`)
