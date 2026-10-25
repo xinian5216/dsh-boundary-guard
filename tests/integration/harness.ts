@@ -23,6 +23,8 @@ import LocalSubprocess from '@deepseek-ai/dsh-subprocess-local'
 import * as shellEnv from '@deepseek-ai/dsh-shell-env'
 import SandboxPwshExecutor from '@deepseek-ai/dsh-pwsh-sandbox'
 import * as toolPwsh from '@deepseek-ai/dsh-tool-pwsh'
+import SandboxBashExecutor from '@deepseek-ai/dsh-bash-sandbox'
+import * as toolBash from '@deepseek-ai/dsh-tool-bash'
 import * as toolFs from '@deepseek-ai/dsh-tool-fs'
 import { SESSION_FORMAT_VERSION, Session } from '@deepseek-ai/dsh-session'
 import type { SessionId } from '@deepseek-ai/dsh-session'
@@ -38,6 +40,8 @@ export interface GuardTestEnv {
   readonly session: Session
   readonly agent: Agent
   readonly workspace: FakeWorkspace
+  /** The composed confined shell tool name, or undefined when none loaded. */
+  readonly shellTool: string | undefined
   /** Approval outcomes handed to upcoming requests, in order. */
   answerWith(outcomes: ApprovalOutcome[]): void
   /** Run one tool call through the real pipeline inside an open turn. */
@@ -97,13 +101,19 @@ export async function createGuardEnv(options: GuardTestEnvOptions = {}): Promise
   await ctx.plugin(toolFs)
   await ctx.plugin(ApprovalService, { policy: 'ask' })
   await ctx.plugin(CommandRuntime)
-  // The confined shell stack (Windows: pwsh through the ACL sandbox).
+  // The confined shell stack: PowerShell on Windows, Bash elsewhere.
   if (process.platform === 'win32') {
     await ctx.plugin(LocalJobService)
     await ctx.plugin(LocalSubprocess)
     await ctx.plugin(shellEnv)
     await ctx.plugin(SandboxPwshExecutor)
     await ctx.plugin(toolPwsh)
+  } else {
+    await ctx.plugin(LocalJobService)
+    await ctx.plugin(LocalSubprocess)
+    await ctx.plugin(shellEnv)
+    await ctx.plugin(SandboxBashExecutor)
+    await ctx.plugin(toolBash)
   }
 
   const sessionId = `session-${Math.random().toString(36).slice(2, 10)}` as SessionId
@@ -135,6 +145,9 @@ export async function createGuardEnv(options: GuardTestEnvOptions = {}): Promise
   })
 
   const commands = ctx.get('commands') as import('@deepseek-ai/dsh-commands').CommandRuntime | undefined
+  const shellTool = process.platform === 'win32'
+    ? (ctx.tools.get('pwsh') === undefined ? undefined : 'pwsh')
+    : (ctx.tools.get('bash') === undefined ? undefined : 'bash')
   let turn = 0
   const text = (content: unknown): string => {
     if (!Array.isArray(content)) return ''
@@ -147,6 +160,7 @@ export async function createGuardEnv(options: GuardTestEnvOptions = {}): Promise
     session,
     agent,
     workspace,
+    shellTool,
     answerWith(outcomes: ApprovalOutcome[]) {
       queue = [...outcomes]
     },

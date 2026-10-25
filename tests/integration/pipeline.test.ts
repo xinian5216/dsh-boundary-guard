@@ -49,28 +49,36 @@ test('the guard backstop denies even when another listener prepends an allow', a
   assert.equal(guard.exists('a.ts'), false)
 })
 
-test('an approved high-risk operation executes; a rejected one does not', async () => {
+test('an approved high-risk operation executes; a rejected one does not', async (t) => {
   const guard = await env()
+  if (guard.shellTool === undefined) {
+    t.skip('no confined shell tool composed on this platform')
+    return
+  }
   // `npm install` requires approval in develop mode.
   guard.answerWith(['allowed-once'])
-  const approved = await guard.call('pwsh', { command: 'npm install --dry-run', description: 'install' })
+  const approved = await guard.call(guard.shellTool, { command: 'npm install --dry-run', description: 'install' })
   assert.equal(approved.isError, false, approved.text)
 
   guard.answerWith(['rejected'])
-  const rejected = await guard.call('pwsh', { command: 'npm install --dry-run', description: 'install' })
+  const rejected = await guard.call(guard.shellTool, { command: 'npm install --dry-run', description: 'install' })
   assert.equal(rejected.isError, true)
   assert.match(rejected.text, /rejected/)
 })
 
-test('a cancelled or unavailable approval never executes the operation', async () => {
+test('a cancelled or unavailable approval never executes the operation', async (t) => {
   const guard = await env()
+  if (guard.shellTool === undefined) {
+    t.skip('no confined shell tool composed on this platform')
+    return
+  }
   guard.answerWith(['cancelled'])
-  const cancelled = await guard.call('pwsh', { command: 'Remove-Item -Recurse -Force build', description: 'clean' })
+  const cancelled = await guard.call(guard.shellTool, { command: 'rm -rf build', description: 'clean' })
   assert.equal(cancelled.isError, true)
   assert.match(cancelled.text, /cancelled/)
 
   guard.answerWith(['unavailable'])
-  const unavailable = await guard.call('pwsh', { command: 'Remove-Item -Recurse -Force build', description: 'clean' })
+  const unavailable = await guard.call(guard.shellTool, { command: 'rm -rf build', description: 'clean' })
   assert.equal(unavailable.isError, true)
   assert.match(unavailable.text, /approval channel/)
 })
@@ -81,7 +89,6 @@ test('out-of-workspace writes are denied in develop mode', async () => {
   const result = await guard.call('write', { file_path: outside, content: 'nope' })
   assert.equal(result.isError, true)
   assert.match(result.text, /outside the authorized workspace/)
-  const { existsSync } = await import('node:fs')
   assert.equal(existsSync(outside), false)
 })
 
